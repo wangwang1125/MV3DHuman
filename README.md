@@ -191,3 +191,4 @@ exploration.
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Tencent-Hunyuan/Hunyuan3D-2.1&type=Date" />
  </picture>
 </a>
+# MV3DHuman
