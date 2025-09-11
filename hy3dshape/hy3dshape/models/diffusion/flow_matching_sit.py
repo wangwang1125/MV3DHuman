@@ -29,6 +29,7 @@ class Diffuser(pl.LightningModule):
         ema_config=None,
         first_stage_key: str = "surface",
         cond_stage_key: str = "image",
+        depth_stage_key: str = "depth",
         scale_by_std: bool = False,
         z_scale_factor: float = 1.0,
         ckpt_path: Optional[str] = None,
@@ -38,6 +39,7 @@ class Diffuser(pl.LightningModule):
         super().__init__()
         self.first_stage_key = first_stage_key
         self.cond_stage_key = cond_stage_key
+        self.depth_stage_key = depth_stage_key
 
         # ========= init optimizer config ========= #
         self.optimizer_cfg = optimizer_cfg
