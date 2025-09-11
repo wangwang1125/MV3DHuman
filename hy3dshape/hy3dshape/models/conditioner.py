@@ -33,6 +33,8 @@ from transformers import (
     Dinov2Config,
 )
 from transformers import AutoImageProcessor, AutoModel
+from .depth_encoder import DepthEncoder, LightweightDepthEncoder
+from .cross_modal_fusion import CrossModalFusion, SimpleCrossModalFusion
 
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
@@ -272,3 +274,131 @@ class SingleImageEncoder(nn.Module):
             'main': self.main_image_encoder.unconditional_embedding(batch_size, **kwargs),
         }
         return outputs
+
+
+class RGBDImageEncoder(nn.Module):
+    """RGB+深度图像编码器，支持微调训练"""
+    def __init__(
+        self,
+        main_image_encoder,
+        depth_encoder_config=None,
+        fusion_config=None,
+        drop_ratio=0.0,
+        freeze_rgb_encoder=True
+    ):
+        super().__init__()
+        # RGB编码器（预训练，可选择冻结）
+        self.main_image_encoder = build_image_encoder(main_image_encoder)
+        if freeze_rgb_encoder:
+            for param in self.main_image_encoder.parameters():
+                param.requires_grad = False
+        
+        # 深度编码器（新增，需要训练）
+        depth_config = depth_encoder_config or {
+            'type': 'lightweight',
+            'input_channels': 1,
+            'hidden_dim': 768,
+            'num_layers': 4
+        }
+        
+        if depth_config['type'] == 'lightweight':
+            self.depth_encoder = LightweightDepthEncoder(
+                input_channels=depth_config['input_channels'],
+                hidden_dim=depth_config['hidden_dim'],
+                num_layers=depth_config['num_layers']
+            )
+        else:
+            self.depth_encoder = DepthEncoder(
+                input_channels=depth_config['input_channels'],
+                hidden_dim=depth_config['hidden_dim'],
+                num_heads=depth_config.get('num_heads', 8),
+                num_layers=depth_config.get('num_layers', 6)
+            )
+        
+        # 跨模态融合模块（新增，需要训练）
+        fusion_config = fusion_config or {
+            'type': 'cross_attention',
+            'hidden_dim': 768,
+            'num_heads': 8
+        }
+        
+        if fusion_config['type'] == 'simple':
+            self.fusion_module = SimpleCrossModalFusion(
+                rgb_dim=self.main_image_encoder.model.config.hidden_size,
+                depth_dim=depth_config['hidden_dim'],
+                output_dim=fusion_config['hidden_dim']
+            )
+        else:
+            self.fusion_module = CrossModalFusion(
+                rgb_dim=self.main_image_encoder.model.config.hidden_size,
+                depth_dim=depth_config['hidden_dim'],
+                hidden_dim=fusion_config['hidden_dim'],
+                num_heads=fusion_config.get('num_heads', 8),
+                fusion_type=fusion_config['type']
+            )
+        
+        self.drop_ratio = drop_ratio
+        self.disable_drop = True
+    
+    def forward(self, rgb_image, depth_image=None, mask=None, **kwargs):
+        # RGB特征提取（预训练模型）
+        rgb_features = self.main_image_encoder(rgb_image, mask=mask, **kwargs)
+        
+        if depth_image is not None:
+            # 深度特征提取（新训练模块）
+            depth_features = self.depth_encoder(depth_image)
+            
+            # 跨模态融合（新训练模块）
+            fused_features = self.fusion_module(rgb_features, depth_features)
+            
+            outputs = {
+                'main': fused_features,
+                'rgb': rgb_features,
+                'depth': depth_features
+            }
+        else:
+            # 仅RGB输入的情况
+            outputs = {
+                'main': rgb_features,
+                'rgb': rgb_features
+            }
+        
+        # Dropout处理
+        if not self.disable_drop and self.drop_ratio > 0:
+            random_p = torch.rand(len(rgb_image), device=rgb_image.device)
+            remain_bool_tensor = random_p > self.drop_ratio
+            outputs['main'] = outputs['main'] * remain_bool_tensor.view(-1, 1, 1)
+        
+        return outputs
+    
+    def unconditional_embedding(self, batch_size, **kwargs):
+        # 获取RGB编码器的无条件嵌入
+        rgb_unconditional = self.main_image_encoder.unconditional_embedding(batch_size, **kwargs)
+        
+        # 创建深度特征的零嵌入
+        device = next(self.depth_encoder.parameters()).device
+        dtype = next(self.depth_encoder.parameters()).dtype
+        depth_unconditional = torch.zeros(
+            batch_size,
+            rgb_unconditional.shape[1],  # 保持序列长度一致
+            self.depth_encoder.hidden_dim,
+            device=device,
+            dtype=dtype
+        )
+        
+        # 融合无条件嵌入
+        fused_unconditional = self.fusion_module(rgb_unconditional, depth_unconditional)
+        
+        outputs = {
+            'main': fused_unconditional,
+            'rgb': rgb_unconditional,
+            'depth': depth_unconditional
+        }
+        return outputs
+    
+    def get_trainable_parameters(self):
+        """获取可训练参数（仅深度编码器和融合模块）"""
+        trainable_params = []
+        trainable_params.extend(list(self.depth_encoder.parameters()))
+        trainable_params.extend(list(self.fusion_module.parameters()))
+        return trainable_params

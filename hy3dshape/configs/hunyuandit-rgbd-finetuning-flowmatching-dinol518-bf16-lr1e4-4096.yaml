@@ -1,0 +1,191 @@
+name: "HunyuanDiT RGBD微调; VAE: 4096 token length; ImageEncoder: DINO-v2 Large + 深度编码器; ImageSize: 518"
+# RGBD微调训练配置 - 固定预训练参数，仅训练深度编码器和跨模态融合模块
+
+training:
+  steps: 5_0000_0000  # 减少训练步数，因为只训练部分参数
+  use_amp: true
+  amp_type: "bf16"
+  base_lr: 1e-4  # 稍微提高学习率，因为只训练新增模块
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
+  every_n_train_steps: 1000  # 更频繁的验证
+  val_check_interval: 100
+  limit_val_batches: 16
+
+dataset:
+  target: hy3dshape.data.dit_asl.AlignedShapeLatentModule
+  params:
+    #! Base setting
+    batch_size: 6  # 可以稍微增加batch size，因为参数量减少
+    num_workers: 8
+    val_num_workers: 4
+
+    # Data 
+    train_data_list: tools/mini_trainset/preprocessed
+    val_data_list: tools/mini_trainset/preprocessed
+
+    #! Image loading
+    cond_stage_key: "image"
+    depth_stage_key: "depth"  # 新增深度图键
+    image_size: 518
+    mean: &mean [0.5, 0.5, 0.5]
+    std: &std [0.5, 0.5, 0.5]
+    
+    # 深度图预处理参数
+    depth_mean: &depth_mean [0.5]
+    depth_std: &depth_std [0.5]
+    depth_normalize: true
+    depth_clip_range: [0.0, 10.0]  # 深度值裁剪范围
+
+    #! Point cloud sampling
+    pc_size: &pc_size 81920
+    pc_sharpedge_size: &pc_sharpedge_size 0
+    sharpedge_label: &sharpedge_label true
+    return_normal: true
+
+    #! Augmentation
+    padding: true
+    # 可以添加深度图增强
+    depth_augmentation:
+      noise_std: 0.01
+      dropout_prob: 0.1
+
+model:
+  target: hy3dshape.models.diffusion.flow_matching_sit.Diffuser
+  params:
+    first_stage_key: "surface"
+    cond_stage_key: "image"
+    depth_stage_key: "depth"  # 新增深度图键
+    scale_by_std: false
+    z_scale_factor: &z_scale_factor 1.0039506158752403
+    torch_compile: false
+
+    # ema_config:
+    #   ema_model: LitEma
+    #   ema_decay: 0.999
+    #   ema_inference: false
+
+    first_stage_config:
+      target: hy3dshape.models.autoencoders.ShapeVAE
+      from_pretrained: tencent/Hunyuan3D-2.1
+
+    cond_stage_config:
+      target: hy3dshape.models.conditioner.RGBDImageEncoder  # 使用新的RGBD编码器
+      params:
+        drop_ratio: 0.1
+        freeze_rgb_encoder: true  # 冻结RGB编码器参数
+        main_image_encoder:
+            type: DinoImageEncoder 
+            kwargs:
+                version: 'facebook/dinov2-large'
+                image_size: 518
+                use_cls_token: true
+        
+        # 深度编码器配置
+        depth_encoder_config:
+          type: 'lightweight'  # 或 'transformer'
+          input_channels: 1
+          hidden_dim: 768
+          num_layers: 4
+          # 如果使用transformer类型
+          # num_heads: 8
+          # dropout: 0.1
+        
+        # 跨模态融合配置
+        fusion_config:
+          type: 'cross_attention'  # 'cross_attention', 'concat_mlp', 'gated', 'adaptive', 'simple'
+          hidden_dim: 768
+          num_heads: 8
+          dropout: 0.1
+          # 其他融合类型的参数
+          # gate_activation: 'sigmoid'  # for gated fusion
+          # adaptive_layers: 2  # for adaptive fusion
+
+    denoiser_cfg:
+      target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
+      from_pretrained: tencent/Hunyuan3D-2.1
+      freeze_pretrained: true  # 冻结预训练的DiT参数
+        
+    scheduler_cfg:
+      transport:
+        target: hy3dshape.models.diffusion.transport.create_transport
+        params:
+          path_type: Linear
+          prediction: velocity
+      sampler:
+        target: hy3dshape.models.diffusion.transport.Sampler
+        params: {}
+        ode_params:
+          sampling_method: euler
+          num_steps: &num_steps 50
+
+    optimizer_cfg:
+      optimizer:
+        target: torch.optim.AdamW
+        params:
+          betas: [0.9, 0.99]
+          eps: 1.e-6
+          weight_decay: 1.e-3  # 稍微减少权重衰减
+          # 只优化可训练参数
+          filter_trainable_only: true
+
+      scheduler:
+        target: hy3dshape.utils.trainings.lr_scheduler.LambdaWarmUpCosineFactorScheduler
+        params:
+          warm_up_steps: 100  # 减少预热步数
+          f_start: 1.e-6
+          f_min: 1.e-4  # 调整最小学习率
+          f_max: 1.0
+
+    pipeline_cfg:
+      target: hy3dshape.pipelines.Hunyuan3DDiTFlowMatchingPipeline
+
+    image_processor_cfg:
+      target: hy3dshape.preprocessors.ImageProcessorV2
+      params: {}
+
+callbacks:
+    logger:
+      target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalASLDiffuserLogger
+      params:
+        step_frequency: 500  # 更频繁的日志记录
+        num_samples: 1
+        sample_times: 1
+        mean: *mean
+        std: *std
+        bounds: [-1.01, -1.01, -1.01, 1.01, 1.01, 1.01]
+        octree_depth: 8
+        num_chunks: 50000
+        mc_level: 0.0
+        # 添加深度图可视化
+        log_depth: true
+        depth_mean: *depth_mean
+        depth_std: *depth_std
+    
+    file_loggers:
+        target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalFixASLDiffuserLogger
+        params:
+          step_frequency: 250
+          test_data_path: "tools/mini_testset/images.json"
+          # 可以添加包含深度图的测试数据路径
+          # test_depth_data_path: "tools/mini_testset/depths.json"
+
+# 微调特定配置
+finetuning:
+  # 参数冻结策略
+  freeze_strategy:
+    rgb_encoder: true      # 冻结RGB编码器
+    vae: true             # 冻结VAE
+    dit_backbone: true    # 冻结DiT主干网络
+    depth_encoder: false  # 训练深度编码器
+    fusion_module: false  # 训练融合模块
+  
+  # 学习率策略
+  lr_strategy:
+    depth_encoder_lr_multiplier: 1.0    # 深度编码器学习率倍数
+    fusion_module_lr_multiplier: 1.0    # 融合模块学习率倍数
+  
+  # 正则化
+  regularization:
+    feature_consistency_loss: 0.1  # RGB-深度特征一致性损失权重
+    fusion_sparsity_loss: 0.01     # 融合模块稀疏性损失权重
