@@ -185,27 +185,38 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         # 调用父类的decode方法
         sample = super().decode(item)
         
-        # 添加深度图处理
-        if self.depth_stage_key in item:
-            depth_path = item[self.depth_stage_key]
-            if isinstance(depth_path, str) and os.path.exists(depth_path):
-                depth = self.load_depth(depth_path)
-                sample[self.depth_stage_key] = depth
+        # 自动构建深度图路径
+        uid = item.split('/')[-1]
+        render_cond_dir = os.path.join(item, 'render_cond')
+        
+        # 为每个RGB图像构建对应的深度图路径
+        depth_images = []
+        rgb_images = sample[self.cond_stage_key]  # 这是RGB图像路径列表
+        
+        for rgb_path in rgb_images:
+            # 从RGB路径构建深度图路径 (例如: 000.png -> 000_depth.png)
+            rgb_filename = os.path.basename(rgb_path)
+            depth_filename = rgb_filename.replace('.png', '_depth.png')
+            depth_path = os.path.join(render_cond_dir, depth_filename)
+            
+            if os.path.exists(depth_path):
+                try:
+                    depth = self.load_depth(depth_path)
+                    depth_images.append(depth)
+                except Exception as e:
+                    if self.require_depth:
+                        raise ValueError(f"无法加载深度图 {depth_path}: {e}")
+                    else:
+                        # 创建零深度图
+                        depth_images.append(np.zeros((224, 224, 1), dtype=np.float32))
             else:
                 if self.require_depth:
-                    raise ValueError(f"深度图路径无效: {depth_path}")
+                    raise ValueError(f"深度图不存在: {depth_path}")
                 else:
                     # 创建零深度图
-                    h, w = sample[self.cond_stage_key].shape[:2]
-                    sample[self.depth_stage_key] = np.zeros((h, w, 1), dtype=np.float32)
-        else:
-            if self.require_depth:
-                raise ValueError(f"数据项中缺少深度图键: {self.depth_stage_key}")
-            else:
-                # 创建零深度图
-                h, w = sample[self.cond_stage_key].shape[:2]
-                sample[self.depth_stage_key] = np.zeros((h, w, 1), dtype=np.float32)
+                    depth_images.append(np.zeros((224, 224, 1), dtype=np.float32))
         
+        sample[self.depth_stage_key] = depth_images
         return sample
     
     def transform(self, sample):
