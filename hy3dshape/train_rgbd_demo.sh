@@ -69,8 +69,8 @@ mkdir -p checkpoints
 mkdir -p logs
 
 # 检查数据目录
-if [ ! -d "tools/mini_trainset/preprocessed" ]; then
-    echo -e "${YELLOW}警告: 训练数据目录不存在: tools/mini_trainset/preprocessed${NC}"
+if [ ! -d "tools/mini_depth_trainset/preprocessed" ]; then
+    echo -e "${YELLOW}警告: 训练数据目录不存在: tools/mini_depth_trainset/preprocessed${NC}"
     echo -e "${YELLOW}请确保已准备好RGBD训练数据${NC}"
 fi
 
