@@ -43,6 +43,7 @@ class Diffuser(pl.LightningModule):
 
         # ========= init optimizer config ========= #
         self.optimizer_cfg = optimizer_cfg
+        self.learning_rate = optimizer_cfg.get('lr', 1e-4)  # 设置学习率，默认值为1e-4
 
         # ========= init diffusion scheduler ========= #
         self.scheduler_cfg = scheduler_cfg
