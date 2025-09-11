@@ -25,7 +25,7 @@ from pytorch_lightning.strategies import DeepSpeedStrategy
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from hy3dshape.utils.misc import instantiate_from_config, load_config
+from hy3dshape.utils.misc import instantiate_from_config, get_config_from_file
 from hy3dshape.utils.trainings.trainer_utils import (
     setup_callbacks, setup_logger, setup_strategy
 )
@@ -41,7 +41,7 @@ class RGBDFineTuningTrainer:
     """
     
     def __init__(self, config_path, resume_path=None, **kwargs):
-        self.config = load_config(config_path)
+        self.config = get_config_from_file(config_path)
         self.resume_path = resume_path
         
         # 更新配置
