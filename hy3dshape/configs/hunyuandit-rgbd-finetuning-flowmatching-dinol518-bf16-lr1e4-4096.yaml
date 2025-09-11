@@ -126,8 +126,6 @@ model:
           betas: [0.9, 0.99]
           eps: 1.e-6
           weight_decay: 1.e-3  # 稍微减少权重衰减
-          # 只优化可训练参数
-          filter_trainable_only: true
 
       scheduler:
         target: hy3dshape.utils.trainings.lr_scheduler.LambdaWarmUpCosineFactorScheduler
