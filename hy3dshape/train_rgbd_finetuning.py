@@ -26,9 +26,10 @@ from pytorch_lightning.strategies import DeepSpeedStrategy
 sys.path.insert(0, str(Path(__file__).parent))
 
 from hy3dshape.utils.misc import instantiate_from_config, get_config_from_file
-from hy3dshape.utils.trainings.trainer_utils import (
-    setup_callbacks, setup_logger, setup_strategy
-)
+# 注意：setup_callbacks 和 setup_logger 函数已在类中实现，无需导入
+# from hy3dshape.utils.trainings.trainer_utils import (
+#     setup_callbacks, setup_logger, setup_strategy
+# )
 
 # 忽略一些警告
 warnings.filterwarnings("ignore", category=UserWarning)
