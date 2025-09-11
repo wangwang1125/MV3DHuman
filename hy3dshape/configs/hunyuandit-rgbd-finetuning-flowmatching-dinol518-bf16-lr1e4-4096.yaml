@@ -13,7 +13,7 @@ training:
   limit_val_batches: 16
 
 dataset:
-  target: hy3dshape.data.dit_asl.AlignedShapeLatentModule
+  target: hy3dshape.data.rgbd_dit_asl.RGBDAlignedShapeLatentModule
   params:
     #! Base setting
     batch_size: 6  # 可以稍微增加batch size，因为参数量减少
@@ -21,8 +21,8 @@ dataset:
     val_num_workers: 4
 
     # Data 
-    train_data_list: tools/mini_trainset/preprocessed
-    val_data_list: tools/mini_trainset/preprocessed
+    train_data_list: tools/mini_depth_trainset/preprocessed
+    val_data_list: tools/mini_depth_trainset/preprocessed
 
     #! Image loading
     cond_stage_key: "image"
@@ -36,6 +36,7 @@ dataset:
     depth_std: &depth_std [0.5]
     depth_normalize: true
     depth_clip_range: [0.0, 10.0]  # 深度值裁剪范围
+    require_depth: true  # 要求必须有深度图
 
     #! Point cloud sampling
     pc_size: &pc_size 81920
