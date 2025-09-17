@@ -2,7 +2,7 @@ export OPENCV_IO_ENABLE_OPENEXR=1
 export OUTPUT_FOLDER=dataset/preprocessed
 export BLENDER_PATH=/path/to/blender-4.0.2-linux-x64/blender
 
-export INPUT_FILE=dataset/raw/uuid.glb
+export INPUT_FILE=dataset/raw/uuid.obj
 export NAME=uuid
 
 $BLENDER_PATH -b -P render/render.py -- --object ${INPUT_FILE} --output_folder $OUTPUT_FOLDER/$NAME/render_cond --geo_mode --resolution 512

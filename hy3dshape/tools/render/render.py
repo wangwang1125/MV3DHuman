@@ -28,7 +28,7 @@ import cv2
 """=============== BLENDER ==============="""
 
 IMPORT_FUNCTIONS: Dict[str, Callable] = {
-    "obj": bpy.ops.import_scene.obj,
+    "obj": bpy.ops.wm.obj_import,
     "glb": bpy.ops.import_scene.gltf,
     "gltf": bpy.ops.import_scene.gltf,
     "usd": bpy.ops.import_scene.usd,
@@ -270,6 +270,13 @@ def ConvertNormalMap(input_exr, output_jpg):
     if exr_img is None:
         raise RuntimeError(f"Failed to load EXR file: {input_exr}")
     print(f"EXR shape: {exr_img.shape}, dtype: {exr_img.dtype}")
+    
+    # Handle different channel counts
+    if len(exr_img.shape) == 3 and exr_img.shape[2] == 2:
+        # 2-channel normal map: add a third channel (Z component)
+        z_channel = np.sqrt(np.maximum(0, 1 - exr_img[:,:,0]**2 - exr_img[:,:,1]**2))
+        exr_img = np.dstack([exr_img, z_channel])
+    
     normal = ((exr_img * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
     cv2.imwrite(output_jpg, normal)
     print(f"Saved normal map to {output_jpg}")
@@ -305,7 +312,7 @@ def ConvertDepthMap(input_exr, output_png):
 
     # filter 
     depth_channel = depth_channel.copy()
-    depth_channel[depth_channel > 1e9] = 0
+    depth_channel[depth_channel > 1e4] = 0
 
     extrinsic_matrix = np.array(cam.matrix_world.copy())
 
@@ -377,15 +384,17 @@ def ConvertDepthMap(input_exr, output_png):
 
     cam_pos[..., 1:] = -cam_pos[..., 1:]
 
-    world_pos = cam_pos @ extrinsic_matrix[:3, :3].T + extrinsic_matrix[:3, 3].reshape(1, 1, 3)
-    world_pos = world_pos.reshape(-1, 3)
-    world_pos[mask] = 0
-    world_pos = world_pos.reshape(cam_pos.shape)
-    world_pos = np.stack((world_pos[..., 0], world_pos[..., 2], -world_pos[..., 1]), axis=-1)
-
-    img_out = np.clip((0.5 + world_pos) * 255, 0, 255).astype('uint8')
-    cv2.imwrite(output_png, img_out)
-    print(f"Saved depth map to {output_png}")
+    # Generate proper depth map with original depth values
+    depth_output = depth_channel.copy()
+    
+    # Set background (non-mesh) areas to 0
+    depth_output[mask.reshape(depth_channel.shape)] = 0
+    
+    # Save as 32-bit float PNG to preserve original depth values
+    # Convert to 16-bit for better precision while keeping file size reasonable
+    depth_output_16bit = (depth_output * 1000).astype(np.uint16)  # Scale by 1000 for millimeter precision
+    cv2.imwrite(output_png, depth_output_16bit)
+    print(f"Saved depth map to {output_png} (16-bit, scaled by 1000)")
 
 
 def init_render(engine='CYCLES', resolution=512, geo_mode=False):
@@ -775,6 +784,7 @@ def main(arg):
 
     if arg.geo_mode:
         views = trellis_cond_camera_sequence(arg.views)
+        arg.save_depth = True
         arg.save_mesh = True
     else:
         views = orthogonal_camera_sequence()
@@ -857,8 +867,9 @@ def main(arg):
         if not arg.geo_mode:
             ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'), 
                              os.path.join(arg.output_folder, f'{i:03d}_normal.jpg'))
-            ConvertDepthMap(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'), 
-                            os.path.join(arg.output_folder, f'{i:03d}_pos.jpg'))
+            # 深度图现在直接保存为PNG格式，不需要转换
+            # ConvertDepthMap(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'), 
+            #                 os.path.join(arg.output_folder, f'{i:03d}_depth.png'))
             os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'))
             os.remove(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'))
 
