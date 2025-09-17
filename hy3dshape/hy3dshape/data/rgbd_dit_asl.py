@@ -238,52 +238,33 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         """
         应用变换，包括深度图变换
         """
-        # 获取RGB图像和深度图
-        image = sample[self.cond_stage_key]
-        depth = sample[self.depth_stage_key]
+        # 调用父类的transform方法处理RGB图像和几何数据
+        sample = super().transform(sample)
         
-        # 确保RGB和深度图尺寸一致
-        if image.shape[:2] != depth.shape[:2]:
-            depth = cv2.resize(depth, (image.shape[1], image.shape[0]))
-            if len(depth.shape) == 2:
-                depth = depth[:, :, np.newaxis]
+        # 获取深度图列表
+        depth_images = sample[self.depth_stage_key]
         
-        # 应用padding（同时处理RGB和深度图）
-        if self.padding:
-            # 为深度图创建mask（非零区域）
-            depth_mask = (depth[:, :, 0] > 0).astype(np.uint8) * 255
+        # 处理每个深度图
+        transformed_depths = []
+        for depth in depth_images:
+            # 应用深度图变换
+            if self.depth_transform is not None:
+                depth = self.depth_transform(depth)
+            else:
+                # 默认深度图变换：转换为tensor并归一化
+                depth = torch.from_numpy(depth).permute(2, 0, 1).float()
+                if self.depth_normalize:
+                    # 归一化到[-1, 1]
+                    depth = depth * 2.0 - 1.0
             
-            # 对RGB图像应用padding
-            image, image_mask = padding(
-                image, 
-                np.ones(image.shape[:2], dtype=np.uint8) * 255,
-                padding_ratio_range=self.padding_ratio_range
-            )
-            
-            # 对深度图应用相同的padding
-            depth, depth_mask = padding(
-                depth,
-                depth_mask,
-                padding_ratio_range=self.padding_ratio_range
-            )
+            transformed_depths.append(depth)
         
-        # 应用图像变换
-        if self.image_transform is not None:
-            image = self.image_transform(image)
-        
-        # 应用深度图变换
-        if self.depth_transform is not None:
-            depth = self.depth_transform(depth)
+        # 将深度图列表转换为tensor并拼接
+        if len(transformed_depths) > 0:
+            sample[self.depth_stage_key] = torch.stack(transformed_depths, dim=0)
         else:
-            # 默认深度图变换：转换为tensor并归一化
-            depth = torch.from_numpy(depth).permute(2, 0, 1).float()
-            if self.depth_normalize:
-                # 归一化到[-1, 1]
-                depth = depth * 2.0 - 1.0
-        
-        # 更新sample
-        sample[self.cond_stage_key] = image
-        sample[self.depth_stage_key] = depth
+            # 如果没有深度图，创建一个零tensor
+            sample[self.depth_stage_key] = torch.zeros(1, 1, 224, 224)
         
         return sample
 

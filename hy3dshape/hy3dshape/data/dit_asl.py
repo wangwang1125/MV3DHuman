@@ -147,7 +147,7 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
     ):
         super().__init__()
         if isinstance(data_list, str) and data_list.endswith('.json'):
-            self.data_list = read_json(data_list_json)
+            self.data_list = read_json(data_list)
         elif isinstance(data_list, str) and os.path.isdir(data_list):
             self.data_list = glob.glob(data_list + '/*')
         else:
