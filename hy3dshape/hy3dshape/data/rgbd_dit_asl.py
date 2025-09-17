@@ -44,8 +44,23 @@ def load_depth_image(depth_path, depth_clip_range=[0.0, 10.0]):
     elif depth_path.endswith('.npz'):
         depth_data = np.load(depth_path)
         depth = depth_data['depth'] if 'depth' in depth_data else depth_data['arr_0']
+    elif depth_path.endswith('.exr'):
+        # 读取EXR格式深度图
+        import OpenEXR
+        import Imath
+        try:
+            exr_file = OpenEXR.InputFile(depth_path)
+            dw = exr_file.header()['dataWindow']
+            size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
+            
+            # 读取深度通道 (通常是R通道)
+            depth_str = exr_file.channel('R', Imath.PixelType(Imath.PixelType.FLOAT))
+            depth = np.frombuffer(depth_str, dtype=np.float32)
+            depth = depth.reshape(size[1], size[0])
+        except Exception as e:
+            raise ValueError(f"无法加载EXR深度图 {depth_path}: {e}")
     else:
-        # 假设是图像格式 (PNG, EXR等)
+        # 假设是PNG等其他图像格式
         depth = cv2.imread(depth_path, cv2.IMREAD_ANYDEPTH)
         if depth is None:
             raise ValueError(f"无法加载深度图: {depth_path}")
@@ -194,9 +209,9 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         rgb_images = sample[self.cond_stage_key]  # 这是RGB图像路径列表
         
         for rgb_path in rgb_images:
-            # 从RGB路径构建深度图路径 (例如: 000.png -> 000_depth.png)
+            # 从RGB路径构建深度图路径 (例如: 000.png -> 000_depth.exr)
             rgb_filename = os.path.basename(rgb_path)
-            depth_filename = rgb_filename.replace('.png', '_depth.png')
+            depth_filename = rgb_filename.replace('.png', '_depth.exr')
             depth_path = os.path.join(render_cond_dir, depth_filename)
             
             if os.path.exists(depth_path):

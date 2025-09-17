@@ -16,7 +16,7 @@ depth = depth.reshape(size[1], size[0])
 # 过滤掉超过100的深度值
 valid_mask = depth <= 100
 filtered_depth = depth.copy()
-filtered_depth[~valid_mask] = 0  # 将无效值设为0
+#filtered_depth[~valid_mask] = 0  # 将无效值设为0
 
 print(f"\n过滤后分析:")
 print(f"有效深度值范围: {filtered_depth[valid_mask].min()} - {filtered_depth[valid_mask].max()}")
