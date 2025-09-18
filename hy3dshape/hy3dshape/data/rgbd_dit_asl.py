@@ -297,6 +297,18 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
             # 使用配置的均值和标准差进行归一化
             depth_mean = getattr(self, 'depth_mean', 0.5)
             depth_std = getattr(self, 'depth_std', 0.5)
+            
+            # 处理ListConfig类型（来自Hydra配置）
+            if hasattr(depth_mean, '__iter__') and not isinstance(depth_mean, (str, torch.Tensor)):
+                depth_mean = float(depth_mean[0]) if len(depth_mean) > 0 else 0.5
+            else:
+                depth_mean = float(depth_mean)
+                
+            if hasattr(depth_std, '__iter__') and not isinstance(depth_std, (str, torch.Tensor)):
+                depth_std = float(depth_std[0]) if len(depth_std) > 0 else 0.5
+            else:
+                depth_std = float(depth_std)
+            
             depth = (depth - depth_mean) / depth_std
         
         # 处理点云数据（调用父类方法）
@@ -443,3 +455,158 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
             worker_init_fn=worker_init_fn,
             persistent_workers=True if self.val_num_workers > 0 else False,
         )
+
+
+def test_depth_transform():
+    """
+    测试深度图转换功能
+    """
+    print("=" * 60)
+    print("开始深度图转换测试")
+    print("=" * 60)
+    
+    # 测试1: 创建模拟深度图数据
+    print("\n1. 测试深度图数据创建...")
+    try:
+        # 创建模拟深度图 (224, 224, 1)
+        test_depth = np.random.rand(224, 224, 1).astype(np.float32)
+        print(f"✓ 创建模拟深度图成功: shape={test_depth.shape}, dtype={test_depth.dtype}")
+        print(f"  深度值范围: [{test_depth.min():.3f}, {test_depth.max():.3f}]")
+    except Exception as e:
+        print(f"✗ 创建模拟深度图失败: {e}")
+        return False
+    
+    # 测试2: 测试深度图加载函数
+    print("\n2. 测试深度图加载函数...")
+    try:
+        # 创建临时深度图文件
+        temp_depth_path = "/tmp/test_depth.npy"
+        np.save(temp_depth_path, test_depth[:, :, 0])  # 保存为2D数组
+        
+        # 测试加载
+        loaded_depth = load_depth_image(temp_depth_path, depth_clip_range=[0.0, 1.0])
+        print(f"✓ 深度图加载成功: shape={loaded_depth.shape}, dtype={loaded_depth.dtype}")
+        print(f"  加载后深度值范围: [{loaded_depth.min():.3f}, {loaded_depth.max():.3f}]")
+        
+        # 清理临时文件
+        os.remove(temp_depth_path)
+    except Exception as e:
+        print(f"✗ 深度图加载测试失败: {e}")
+        return False
+    
+    # 测试3: 测试深度图数据增强
+    print("\n3. 测试深度图数据增强...")
+    try:
+        augmented_depth = depth_augmentation(
+            test_depth, 
+            noise_std=0.01, 
+            dropout_prob=0.1
+        )
+        print(f"✓ 深度图数据增强成功: shape={augmented_depth.shape}")
+        print(f"  增强后深度值范围: [{augmented_depth.min():.3f}, {augmented_depth.max():.3f}]")
+    except Exception as e:
+        print(f"✗ 深度图数据增强测试失败: {e}")
+        return False
+    
+    # 测试4: 测试深度图变换处理（模拟transform方法中的逻辑）
+    print("\n4. 测试深度图变换处理...")
+    try:
+        depth = test_depth.copy()
+        
+        # 确保深度图是numpy数组
+        if isinstance(depth, torch.Tensor):
+            depth = depth.numpy()
+        
+        # 确保深度图形状正确 (H, W, 1)
+        if len(depth.shape) == 2:
+            depth = depth[:, :, np.newaxis]
+        elif len(depth.shape) == 3 and depth.shape[2] != 1:
+            depth = depth[:, :, 0:1]
+        
+        # 调整尺寸到目标大小
+        target_size = 224
+        if depth.shape[:2] != (target_size, target_size):
+            depth = cv2.resize(depth, (target_size, target_size))
+            if len(depth.shape) == 2:
+                depth = depth[:, :, np.newaxis]
+        
+        # 转换为tensor
+        depth_tensor = torch.from_numpy(depth.copy()).permute(2, 0, 1).float()
+        print(f"✓ 深度图转换为tensor成功: shape={depth_tensor.shape}")
+        
+        # 归一化处理
+        depth_mean = 0.5
+        depth_std = 0.5
+        
+        # 处理ListConfig类型（模拟配置情况）
+        if hasattr(depth_mean, '__iter__') and not isinstance(depth_mean, (str, torch.Tensor)):
+            depth_mean = float(depth_mean[0]) if len(depth_mean) > 0 else 0.5
+        else:
+            depth_mean = float(depth_mean)
+            
+        if hasattr(depth_std, '__iter__') and not isinstance(depth_std, (str, torch.Tensor)):
+            depth_std = float(depth_std[0]) if len(depth_std) > 0 else 0.5
+        else:
+            depth_std = float(depth_std)
+        
+        normalized_depth = (depth_tensor - depth_mean) / depth_std
+        print(f"✓ 深度图归一化成功: shape={normalized_depth.shape}")
+        print(f"  归一化后深度值范围: [{normalized_depth.min():.3f}, {normalized_depth.max():.3f}]")
+        print(f"  使用的归一化参数: mean={depth_mean}, std={depth_std}")
+        
+    except Exception as e:
+        print(f"✗ 深度图变换处理测试失败: {e}")
+        traceback.print_exc()
+        return False
+    
+    # 测试5: 测试RGBDAlignedShapeLatentDataset初始化
+    print("\n5. 测试RGBDAlignedShapeLatentDataset初始化...")
+    try:
+        # 创建测试数据集（不需要实际数据文件）
+        dataset = RGBDAlignedShapeLatentDataset(
+            data_list=None,  # 不提供数据列表，只测试初始化
+            depth_mean=0.5,
+            depth_std=0.5,
+            image_size=224,
+            require_depth=False  # 不要求深度图，避免文件不存在的问题
+        )
+        print(f"✓ RGBDAlignedShapeLatentDataset初始化成功")
+        print(f"  depth_mean: {dataset.depth_mean}")
+        print(f"  depth_std: {dataset.depth_std}")
+        print(f"  image_size: {dataset.image_size}")
+        
+    except Exception as e:
+        print(f"✗ RGBDAlignedShapeLatentDataset初始化测试失败: {e}")
+        traceback.print_exc()
+        return False
+    
+    # 测试6: 测试RGBDAlignedShapeLatentModule初始化
+    print("\n6. 测试RGBDAlignedShapeLatentModule初始化...")
+    try:
+        # 创建测试数据模块
+        data_module = RGBDAlignedShapeLatentModule(
+            batch_size=1,
+            depth_mean=[0.5],
+            depth_std=[0.5],
+            image_size=224,
+            require_depth=False
+        )
+        print(f"✓ RGBDAlignedShapeLatentModule初始化成功")
+        print(f"  depth_mean: {data_module.depth_mean}")
+        print(f"  depth_std: {data_module.depth_std}")
+        print(f"  image_size: {data_module.image_size}")
+        
+    except Exception as e:
+        print(f"✗ RGBDAlignedShapeLatentModule初始化测试失败: {e}")
+        traceback.print_exc()
+        return False
+    
+    print("\n" + "=" * 60)
+    print("✓ 所有深度图转换测试通过！")
+    print("=" * 60)
+    return True
+
+
+if __name__ == "__main__":
+    # 运行深度图转换测试
+    test_depth_transform()
