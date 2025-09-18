@@ -148,11 +148,24 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         super().__init__()
         if isinstance(data_list, str) and data_list.endswith('.json'):
             self.data_list = read_json(data_list)
-        elif isinstance(data_list, str) and os.path.isdir(data_list):
-            self.data_list = glob.glob(data_list + '/*')
+        elif isinstance(data_list, str):
+            # 处理目录路径，支持相对路径
+            data_path = data_list
+            
+            # 如果是相对路径，尝试相对于当前文件的父目录解析
+            if not os.path.isabs(data_path):
+                # 获取当前文件所在的hy3dshape目录
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                data_path = os.path.join(current_dir, data_list)
+            
+            if os.path.isdir(data_path):
+                self.data_list = glob.glob(data_path + '/*')
+            else:
+                # 如果路径不存在，保持原始值并让后续逻辑处理
+                self.data_list = data_list
         else:
             self.data_list = data_list
-        assert isinstance(self.data_list, list)
+        assert isinstance(self.data_list, list), f"data_list must be a list, got {type(self.data_list)} with value: {self.data_list}"
         self.rng = random.Random(0)
         
         self.cond_stage_key = cond_stage_key
