@@ -157,12 +157,41 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
                 # 获取当前文件所在的hy3dshape目录
                 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 data_path = os.path.join(current_dir, data_list)
+                
+                # 调试信息
+                print(f"DEBUG: Original data_list: {data_list}")
+                print(f"DEBUG: Current file: {__file__}")
+                print(f"DEBUG: Current dir: {current_dir}")
+                print(f"DEBUG: Resolved data_path: {data_path}")
+                print(f"DEBUG: Path exists: {os.path.exists(data_path)}")
+                print(f"DEBUG: Is directory: {os.path.isdir(data_path)}")
             
             if os.path.isdir(data_path):
-                self.data_list = glob.glob(data_path + '/*')
+                file_list = glob.glob(data_path + '/*')
+                print(f"DEBUG: Found {len(file_list)} items in directory")
+                self.data_list = file_list
             else:
-                # 如果路径不存在，保持原始值并让后续逻辑处理
-                self.data_list = data_list
+                # 如果路径不存在，尝试其他可能的路径
+                print(f"DEBUG: Path {data_path} not found, trying alternative paths")
+                
+                # 尝试相对于工作目录
+                alt_path1 = os.path.abspath(data_list)
+                print(f"DEBUG: Trying absolute path: {alt_path1}")
+                
+                if os.path.isdir(alt_path1):
+                    self.data_list = glob.glob(alt_path1 + '/*')
+                    print(f"DEBUG: Found directory at {alt_path1}")
+                else:
+                    # 最后尝试：假设是从hy3dshape目录运行的
+                    alt_path2 = os.path.join(os.getcwd(), data_list)
+                    print(f"DEBUG: Trying from cwd: {alt_path2}")
+                    
+                    if os.path.isdir(alt_path2):
+                        self.data_list = glob.glob(alt_path2 + '/*')
+                        print(f"DEBUG: Found directory at {alt_path2}")
+                    else:
+                        print(f"DEBUG: All path attempts failed, keeping original string")
+                        self.data_list = data_list
         else:
             self.data_list = data_list
         assert isinstance(self.data_list, list), f"data_list must be a list, got {type(self.data_list)} with value: {self.data_list}"
