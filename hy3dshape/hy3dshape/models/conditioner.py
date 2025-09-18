@@ -340,9 +340,9 @@ class RGBDImageEncoder(nn.Module):
         self.drop_ratio = drop_ratio
         self.disable_drop = True
     
-    def forward(self, rgb_image, depth_image=None, mask=None, **kwargs):
+    def forward(self, image, depth_image=None, mask=None, **kwargs):
         # RGB特征提取（预训练模型）
-        rgb_features = self.main_image_encoder(rgb_image, mask=mask, **kwargs)
+        rgb_features = self.main_image_encoder(image, mask=mask, **kwargs)
         
         if depth_image is not None:
             # 深度特征提取（新训练模块）
@@ -365,7 +365,7 @@ class RGBDImageEncoder(nn.Module):
         
         # Dropout处理
         if not self.disable_drop and self.drop_ratio > 0:
-            random_p = torch.rand(len(rgb_image), device=rgb_image.device)
+            random_p = torch.rand(len(image), device=image.device)
             remain_bool_tensor = random_p > self.drop_ratio
             outputs['main'] = outputs['main'] * remain_bool_tensor.view(-1, 1, 1)
         
