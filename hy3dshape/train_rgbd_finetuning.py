@@ -224,7 +224,7 @@ class RGBDFineTuningTrainer:
             # 多GPU训练
             strategy = "ddp"
             print(f"使用多GPU训练，设备数量: {torch.cuda.device_count()}")
-        
+        print("创建训练器")
         # 创建训练器
         trainer = pl.Trainer(
             max_steps=self.config.training.steps,
@@ -242,7 +242,7 @@ class RGBDFineTuningTrainer:
             enable_progress_bar=True,
             enable_model_summary=True,
         )
-        
+        print("开始训练")
         # 开始训练
         trainer.fit(
             model=model,

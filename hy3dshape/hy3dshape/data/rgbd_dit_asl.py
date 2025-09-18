@@ -238,35 +238,58 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         """
         应用变换，包括深度图变换
         """
-        # 调用父类的transform方法处理RGB图像和几何数据
-        sample = super().transform(sample)
+        # 首先处理深度图数据
+        rgb_images = sample[self.cond_stage_key]  # 这是RGB图像路径列表
+        depth_images = sample[self.depth_stage_key]  # 这是深度图数组列表
         
-        # 获取深度图列表
-        depth_images = sample[self.depth_stage_key]
+        # 选择一个RGB图像和对应的深度图
+        selected_idx = self.rng.randint(0, len(rgb_images) - 1)
+        selected_rgb_path = rgb_images[selected_idx]
+        selected_depth = depth_images[selected_idx]
         
-        # 处理每个深度图
-        transformed_depths = []
-        for depth in depth_images:
-            # 应用深度图变换
-            if self.depth_transform is not None:
-                depth = self.depth_transform(depth)
-            else:
-                # 默认深度图变换：转换为tensor并归一化
-                depth = torch.from_numpy(depth).permute(2, 0, 1).float()
-                if self.depth_normalize:
-                    # 归一化到[-1, 1]
-                    depth = depth * 2.0 - 1.0
+        # 加载RGB图像（使用父类的load_render方法）
+        image_input, mask_input = self.load_render([selected_rgb_path])
+        
+        # 处理深度图
+        depth = selected_depth
+        
+        # 确保RGB和深度图尺寸一致
+        if len(image_input.shape) == 4:  # (1, C, H, W)
+            rgb_h, rgb_w = image_input.shape[2], image_input.shape[3]
+        else:  # (C, H, W)
+            rgb_h, rgb_w = image_input.shape[1], image_input.shape[2]
             
-            transformed_depths.append(depth)
+        if depth.shape[:2] != (rgb_h, rgb_w):
+            depth = cv2.resize(depth, (rgb_w, rgb_h))
+            if len(depth.shape) == 2:
+                depth = depth[:, :, np.newaxis]
         
-        # 将深度图列表转换为tensor并拼接
-        if len(transformed_depths) > 0:
-            sample[self.depth_stage_key] = torch.stack(transformed_depths, dim=0)
+        # 应用深度图变换
+        if self.depth_transform is not None:
+            depth = self.depth_transform(depth)
         else:
-            # 如果没有深度图，创建一个零tensor
-            sample[self.depth_stage_key] = torch.zeros(1, 1, 224, 224)
+            # 默认深度图变换：转换为tensor并归一化
+            depth = torch.from_numpy(depth).permute(2, 0, 1).float()
+            if self.depth_normalize:
+                # 归一化到[-1, 1]
+                depth = depth * 2.0 - 1.0
         
-        return sample
+        # 处理点云数据（调用父类方法）
+        rng = np.random.default_rng()
+        random_surface = sample.get("random_surface", 0)
+        sharpedge_surface = sample.get("sharpedge_surface", 0)
+        surface, geo_points = self.load_surface_sdf_points(rng, random_surface, sharpedge_surface)
+        
+        # 构建最终的sample
+        final_sample = {
+            "surface": surface,
+            "geo_points": geo_points,
+            "image": image_input,
+            "mask": mask_input,
+            self.depth_stage_key: depth,
+        }
+        
+        return final_sample
 
 
 class RGBDAlignedShapeLatentModule(LightningDataModule):
@@ -325,11 +348,10 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
         self.depth_augmentation = depth_augmentation
         self.require_depth = require_depth
         
-        # 图像变换
+        # 图像变换（与父类保持一致）
         self.image_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((self.image_size, self.image_size)),
             transforms.ToTensor(),
+            transforms.Resize(self.image_size),
             transforms.Normalize(mean=self.mean, std=self.std)
         ])
         
