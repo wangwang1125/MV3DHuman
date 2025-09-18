@@ -135,6 +135,10 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         depth_normalize=True,
         depth_augmentation_config=None,
         require_depth=True,  # 是否必须有深度图
+        # 深度图归一化参数
+        depth_mean=0.5,
+        depth_std=0.5,
+        image_size=224,
     ):
         super().__init__(
             data_list=data_list,
@@ -155,6 +159,9 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         self.depth_clip_range = depth_clip_range
         self.depth_normalize = depth_normalize
         self.require_depth = require_depth
+        self.depth_mean = depth_mean
+        self.depth_std = depth_std
+        self.image_size = image_size
         
         # 深度图增强配置
         self.depth_aug_config = depth_augmentation_config or {
@@ -264,15 +271,33 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
             if len(depth.shape) == 2:
                 depth = depth[:, :, np.newaxis]
         
-        # 应用深度图变换
-        if self.depth_transform is not None:
-            depth = self.depth_transform(depth)
-        else:
-            # 默认深度图变换：转换为tensor并归一化
-            depth = torch.from_numpy(depth).permute(2, 0, 1).float()
-            if self.depth_normalize:
-                # 归一化到[-1, 1]
-                depth = depth * 2.0 - 1.0
+        # 安全的深度图变换处理
+        # 确保深度图是numpy数组
+        if isinstance(depth, torch.Tensor):
+            depth = depth.numpy()
+        
+        # 确保深度图形状正确 (H, W, 1)
+        if len(depth.shape) == 2:
+            depth = depth[:, :, np.newaxis]
+        elif len(depth.shape) == 3 and depth.shape[2] != 1:
+            depth = depth[:, :, 0:1]  # 只取第一个通道
+        
+        # 调整尺寸到目标大小
+        target_size = getattr(self, 'image_size', 224)
+        if depth.shape[:2] != (target_size, target_size):
+            depth = cv2.resize(depth, (target_size, target_size))
+            if len(depth.shape) == 2:
+                depth = depth[:, :, np.newaxis]
+        
+        # 转换为tensor
+        depth = torch.from_numpy(depth.copy()).permute(2, 0, 1).float()
+        
+        # 归一化处理
+        if self.depth_normalize:
+            # 使用配置的均值和标准差进行归一化
+            depth_mean = getattr(self, 'depth_mean', 0.5)
+            depth_std = getattr(self, 'depth_std', 0.5)
+            depth = (depth - depth_mean) / depth_std
         
         # 处理点云数据（调用父类方法）
         rng = np.random.default_rng()
@@ -355,13 +380,8 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
             transforms.Normalize(mean=self.mean, std=self.std)
         ])
         
-        # 深度图变换
-        self.depth_transform = transforms.Compose([
-            transforms.ToPILImage(mode='F'),
-            transforms.Resize((self.image_size, self.image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=self.depth_mean, std=self.depth_std)
-        ])
+        # 深度图变换（避免PIL模式问题）
+        self.depth_transform = None  # 在transform方法中手动处理
     
     def train_dataloader(self):
         dataset = RGBDAlignedShapeLatentDataset(
@@ -380,6 +400,9 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
             depth_normalize=self.depth_normalize,
             depth_augmentation_config=self.depth_augmentation,
             require_depth=self.require_depth,
+            depth_mean=self.depth_mean[0] if isinstance(self.depth_mean, (list, tuple)) else self.depth_mean,
+            depth_std=self.depth_std[0] if isinstance(self.depth_std, (list, tuple)) else self.depth_std,
+            image_size=self.image_size,
         )
         
         return torch.utils.data.DataLoader(
@@ -408,6 +431,9 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
             depth_augmentation_config=None,  # 验证时不使用数据增强
             require_depth=self.require_depth,
             deterministic=True,  # 验证时使用确定性采样
+            depth_mean=self.depth_mean[0] if isinstance(self.depth_mean, (list, tuple)) else self.depth_mean,
+            depth_std=self.depth_std[0] if isinstance(self.depth_std, (list, tuple)) else self.depth_std,
+            image_size=self.image_size,
         )
         
         return torch.utils.data.DataLoader(
