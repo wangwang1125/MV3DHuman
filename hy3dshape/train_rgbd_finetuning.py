@@ -159,8 +159,8 @@ class RGBDFineTuningTrainer:
         # 模型检查点
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"checkpoints/rgbd_finetuning_{self.config.name.replace(' ', '_')}",
-            filename="{epoch:02d}-{val_loss:.4f}",
-            monitor="val_loss",
+            filename="{epoch:02d}-{val_total_loss:.4f}",
+            monitor="val/total_loss",
             mode="min",
             save_top_k=3,
             save_last=True,
