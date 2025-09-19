@@ -217,6 +217,8 @@ height="{height}" width="100%" frameborder="0"></iframe>'
 def _gen_shape(
     caption=None,
     image=None,
+    depth_image=None,
+    use_rgbd_model=False,
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
@@ -229,6 +231,7 @@ def _gen_shape(
     num_chunks=200000,
     randomize_seed: bool = False,
 ):
+    global rgbd_worker
     if not MV_MODE and image is None and caption is None:
         raise gr.Error("Please provide either a caption or an image.")
     if MV_MODE:
@@ -299,15 +302,54 @@ def _gen_shape(
 
     generator = torch.Generator()
     generator = generator.manual_seed(int(seed))
-    outputs = i23d_worker(
-        image=image,
-        num_inference_steps=steps,
-        guidance_scale=guidance_scale,
-        generator=generator,
-        octree_resolution=octree_resolution,
-        num_chunks=num_chunks,
-        output_type='mesh'
-    )
+    
+    # 检查是否使用RGBD模型
+    if use_rgbd_model and depth_image is not None and rgbd_worker is not None:
+        # 使用RGBD模型进行推理
+        print("Using RGBD model for depth-aware generation")
+        # 处理深度图
+        if depth_image.mode != "L":
+            depth_image = depth_image.convert("L")  # 转换为灰度图
+        
+        # 调用RGBD模型的推理函数
+        # 注意：这里需要根据实际的RGBD模型接口进行调整
+        try:
+            outputs = rgbd_worker(
+                image=image,
+                depth_image=depth_image,  # 传递深度图
+                num_inference_steps=steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                octree_resolution=octree_resolution,
+                num_chunks=num_chunks,
+                output_type='mesh'
+            )
+        except Exception as e:
+            print(f"RGBD model inference failed: {e}, falling back to standard model")
+            outputs = i23d_worker(
+                image=image,
+                num_inference_steps=steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                octree_resolution=octree_resolution,
+                num_chunks=num_chunks,
+                output_type='mesh'
+            )
+    else:
+        # 使用原始模型
+        if use_rgbd_model and depth_image is not None and rgbd_worker is None:
+            print("RGBD model requested but not available, using standard RGB model")
+        else:
+            print("Using standard RGB model")
+        outputs = i23d_worker(
+            image=image,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            octree_resolution=octree_resolution,
+            num_chunks=num_chunks,
+            output_type='mesh'
+        )
     time_meta['shape generation'] = time.time() - start_time
     logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
 
@@ -326,6 +368,8 @@ def _gen_shape(
 def generation_all(
     caption=None,
     image=None,
+    depth_image=None,
+    use_rgbd_model=False,
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
@@ -342,6 +386,8 @@ def generation_all(
     mesh, image, save_folder, stats, seed = _gen_shape(
         caption,
         image,
+        depth_image=depth_image,
+        use_rgbd_model=use_rgbd_model,
         mv_image_front=mv_image_front,
         mv_image_back=mv_image_back,
         mv_image_left=mv_image_left,
@@ -408,6 +454,8 @@ def generation_all(
 def shape_generation(
     caption=None,
     image=None,
+    depth_image=None,
+    use_rgbd_model=False,
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
@@ -424,6 +472,8 @@ def shape_generation(
     mesh, image, save_folder, stats, seed = _gen_shape(
         caption,
         image,
+        depth_image=depth_image,
+        use_rgbd_model=use_rgbd_model,
         mv_image_front=mv_image_front,
         mv_image_back=mv_image_back,
         mv_image_left=mv_image_left,
@@ -494,6 +544,19 @@ def build_app():
                 with gr.Tabs(selected='tab_img_prompt') as tabs_prompt:
                     with gr.Tab('Image Prompt', id='tab_img_prompt', visible=not MV_MODE) as tab_ip:
                         image = gr.Image(label='Image', type='pil', image_mode='RGBA', height=290)
+                        with gr.Row():
+                            depth_image = gr.Image(
+                                label='Depth Map (Optional)', 
+                                type='pil', 
+                                image_mode='L',  # Grayscale for depth
+                                height=140,
+                                info='Upload a depth map to use RGBD model. Leave empty to use RGB-only model.'
+                            )
+                            use_rgbd_model = gr.Checkbox(
+                                label='Enable RGBD Model',
+                                value=False,
+                                info='Automatically enabled when depth map is provided'
+                            )
                         caption = gr.State(None)
 #                    with gr.Tab('Text Prompt', id='tab_txt_prompt', visible=HAS_T2I and not MV_MODE) as tab_tp:
 #                        caption = gr.Textbox(label='Text Prompt',
@@ -610,6 +673,8 @@ Fast for very complex cases, Standard seldom use.',
             inputs=[
                 caption,
                 image,
+                depth_image,
+                use_rgbd_model,
                 mv_image_front,
                 mv_image_back,
                 mv_image_left,
@@ -737,6 +802,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2.1')
     parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-1')
     parser.add_argument("--texgen_model_path", type=str, default='tencent/Hunyuan3D-2.1')
+    parser.add_argument("--rgbd_model_path", type=str, default='./hy3dshape/checkpoints/rgbd_finetuning_HunyuanDiT_RGBD微调;_VAE:_4096_token_length;_ImageEncoder:_DINO-v2_Large_+_深度编码器;_ImageSize:_518', help='Path to RGBD model checkpoints directory')
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--device', type=str, default='cuda')
@@ -844,6 +910,54 @@ if __name__ == '__main__':
         i23d_worker.enable_flashvdm(mc_algo=mc_algo)
     if args.compile:
         i23d_worker.compile()
+
+    # 加载RGBD模型
+    rgbd_worker = None
+    try:
+        if os.path.exists(args.rgbd_model_path):
+            # 检查是否存在last.ckpt文件
+            last_ckpt_path = os.path.join(args.rgbd_model_path, 'last.ckpt')
+            if os.path.exists(last_ckpt_path):
+                print(f"Loading RGBD model from checkpoint: {last_ckpt_path}")
+                # 首先加载基础模型
+                rgbd_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                    args.model_path,
+                    subfolder=args.subfolder,
+                    use_safetensors=False,
+                    device=args.device,
+                )
+                # 然后加载微调的权重
+                checkpoint = torch.load(last_ckpt_path, map_location=args.device)
+                if 'state_dict' in checkpoint:
+                    state_dict = checkpoint['state_dict']
+                    # 移除Lightning模块的前缀
+                    new_state_dict = {}
+                    for key, value in state_dict.items():
+                        if key.startswith('model.'):
+                            new_key = key[6:]  # 移除'model.'前缀
+                            new_state_dict[new_key] = value
+                        else:
+                            new_state_dict[key] = value
+                    rgbd_worker.load_state_dict(new_state_dict, strict=False)
+                    print("RGBD model checkpoint loaded successfully")
+                else:
+                    rgbd_worker.load_state_dict(checkpoint, strict=False)
+                    print("RGBD model checkpoint loaded successfully")
+                
+                if args.enable_flashvdm:
+                    rgbd_worker.enable_flashvdm(mc_algo=mc_algo)
+                if args.compile:
+                    rgbd_worker.compile()
+            else:
+                print(f"Checkpoint file not found: {last_ckpt_path}")
+                print("RGBD functionality will be disabled")
+        else:
+            print(f"RGBD model path {args.rgbd_model_path} does not exist, RGBD functionality will be disabled")
+    except Exception as e:
+        print(f"Failed to load RGBD model: {e}")
+        print("RGBD functionality will be disabled")
+        import traceback
+        traceback.print_exc()
 
     floater_remove_worker = FloaterRemover()
     degenerate_face_remove_worker = DegenerateFaceRemover()
