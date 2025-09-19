@@ -198,7 +198,7 @@ def build_model_viewer_html(save_folder, height=660, width=790, textured=False):
     with open(output_html_path, 'w', encoding='utf-8') as f:
         template_html = template_html.replace('#height#', f'{height - offset}')
         template_html = template_html.replace('#width#', f'{width}')
-        template_html = template_html.replace('#src#', f'{related_path}/')
+        template_html = template_html.replace('#src#', f'{related_path}')
         f.write(template_html)
 
     rel_path = os.path.relpath(output_html_path, SAVE_DIR)
@@ -579,17 +579,34 @@ def build_app():
                 with gr.Tabs(selected='tab_img_prompt') as tabs_prompt:
                     with gr.Tab('Image Prompt', id='tab_img_prompt', visible=not MV_MODE) as tab_ip:
                         image = gr.Image(label='Image', type='pil', image_mode='RGBA', height=290)
-                        with gr.Row():
-                            depth_image = gr.Image(
-                                label='Depth Map (Optional)', 
-                                type='pil', 
-                                image_mode='L',  # Grayscale for depth
-                                height=140
-                            )
-                            use_rgbd_model = gr.Checkbox(
-                                label='Enable RGBD Model',
-                                value=False
-                            )
+                        # 根据模型类型显示深度图输入
+                        if args.model_type == 'rgbd':
+                            with gr.Row():
+                                depth_image = gr.Image(
+                                    label='Depth Map (Required for RGBD model)', 
+                                    type='pil', 
+                                    image_mode='L',  # Grayscale for depth
+                                    height=140
+                                )
+                                # 显示当前模型类型信息
+                                gr.HTML(f"""
+                                <div style="padding: 10px; background-color: #e8f5e8; border-radius: 5px; margin: 5px;">
+                                    <strong>Current Model:</strong> RGBD Model<br>
+                                    <small>Depth-aware 3D generation enabled</small>
+                                </div>
+                                """)
+                            use_rgbd_model = gr.State(True)  # 固定为True
+                        else:
+                            # RGB模式下隐藏深度图输入
+                            depth_image = gr.State(None)  # 隐藏的状态变量
+                            use_rgbd_model = gr.State(False)  # 固定为False
+                            # 显示当前模型类型信息
+                            gr.HTML(f"""
+                            <div style="padding: 10px; background-color: #f0f8ff; border-radius: 5px; margin: 5px;">
+                                <strong>Current Model:</strong> Standard RGB Model<br>
+                                <small>Standard image-to-3D generation</small>
+                            </div>
+                            """)
                         caption = gr.State(None)
 #                    with gr.Tab('Text Prompt', id='tab_txt_prompt', visible=HAS_T2I and not MV_MODE) as tab_tp:
 #                        caption = gr.Textbox(label='Text Prompt',
@@ -833,6 +850,8 @@ if __name__ == '__main__':
     parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-1')
     parser.add_argument("--texgen_model_path", type=str, default='tencent/Hunyuan3D-2.1')
     parser.add_argument("--rgbd_model_path", type=str, default='./hy3dshape/checkpoints/rgbd_finetuning_HunyuanDiT_RGBD微调;_VAE:_4096_token_length;_ImageEncoder:_DINO-v2_Large_+_深度编码器;_ImageSize:_518', help='Path to RGBD model checkpoints directory')
+    parser.add_argument('--model_type', type=str, choices=['rgb', 'rgbd'], default='rgbd', 
+                       help='Choose which model to load: "rgb" for standard RGB model, "rgbd" for depth-aware RGBD model. Only the selected model will be loaded to save memory.')
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--device', type=str, default='cuda')
@@ -929,67 +948,92 @@ if __name__ == '__main__':
     from hy3dshape.rembg import BackgroundRemover
 
     rmbg_worker = BackgroundRemover()
-    i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        args.model_path,
-        subfolder=args.subfolder,
-        use_safetensors=False,
-        device=args.device,
-    )
-    if args.enable_flashvdm:
-        mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
-        i23d_worker.enable_flashvdm(mc_algo=mc_algo)
-    if args.compile:
-        i23d_worker.compile()
-
-    # 加载RGBD模型
+    
+    # 根据选择的模型类型加载对应的模型
+    i23d_worker = None
     rgbd_worker = None
-    try:
-        if os.path.exists(args.rgbd_model_path):
-            # 检查是否存在last.ckpt文件
-            last_ckpt_path = os.path.join(args.rgbd_model_path, 'last.ckpt')
-            if os.path.exists(last_ckpt_path):
-                print(f"Loading RGBD model from checkpoint: {last_ckpt_path}")
-                # 首先加载基础模型
-                rgbd_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                    args.model_path,
-                    subfolder=args.subfolder,
-                    use_safetensors=False,
-                    device=args.device,
-                )
-                # 然后加载微调的权重
-                checkpoint = torch.load(last_ckpt_path, map_location=args.device)
-                if 'state_dict' in checkpoint:
-                    state_dict = checkpoint['state_dict']
-                    # 移除Lightning模块的前缀
-                    new_state_dict = {}
-                    for key, value in state_dict.items():
-                        if key.startswith('model.'):
-                            new_key = key[6:]  # 移除'model.'前缀
-                            new_state_dict[new_key] = value
-                        else:
-                            new_state_dict[key] = value
-                    # 使用pipeline的model来加载权重
-                    rgbd_worker.model.load_state_dict(new_state_dict, strict=False)
-                    print("RGBD model checkpoint loaded successfully")
+    
+    print(f"Loading model type: {args.model_type}")
+    
+    if args.model_type == 'rgb':
+        # 只加载标准RGB模型
+        print("Loading standard RGB model...")
+        i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            args.model_path,
+            subfolder=args.subfolder,
+            use_safetensors=False,
+            device=args.device,
+        )
+        if args.enable_flashvdm:
+            mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
+            i23d_worker.enable_flashvdm(mc_algo=mc_algo)
+        if args.compile:
+            i23d_worker.compile()
+        print("Standard RGB model loaded successfully")
+        
+    elif args.model_type == 'rgbd':
+        # 只加载RGBD模型
+        print("Loading RGBD model...")
+        try:
+            if os.path.exists(args.rgbd_model_path):
+                # 检查是否存在last.ckpt文件
+                last_ckpt_path = os.path.join(args.rgbd_model_path, 'last.ckpt')
+                if os.path.exists(last_ckpt_path):
+                    print(f"Loading RGBD model from checkpoint: {last_ckpt_path}")
+                    # 首先加载基础模型
+                    rgbd_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                        args.model_path,
+                        subfolder=args.subfolder,
+                        use_safetensors=False,
+                        device=args.device,
+                    )
+                    # 然后加载微调的权重
+                    checkpoint = torch.load(last_ckpt_path, map_location=args.device)
+                    if 'state_dict' in checkpoint:
+                        state_dict = checkpoint['state_dict']
+                        # 移除Lightning模块的前缀
+                        new_state_dict = {}
+                        for key, value in state_dict.items():
+                            if key.startswith('model.'):
+                                new_key = key[6:]  # 移除'model.'前缀
+                                new_state_dict[new_key] = value
+                            else:
+                                new_state_dict[key] = value
+                        # 使用pipeline的model来加载权重
+                        rgbd_worker.model.load_state_dict(new_state_dict, strict=False)
+                        print("RGBD model checkpoint loaded successfully")
+                    else:
+                        # 使用pipeline的model来加载权重
+                        rgbd_worker.model.load_state_dict(checkpoint, strict=False)
+                        print("RGBD model checkpoint loaded successfully")
+                    
+                    if args.enable_flashvdm:
+                        mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
+                        rgbd_worker.enable_flashvdm(mc_algo=mc_algo)
+                    if args.compile:
+                        rgbd_worker.compile()
                 else:
-                    # 使用pipeline的model来加载权重
-                    rgbd_worker.model.load_state_dict(checkpoint, strict=False)
-                    print("RGBD model checkpoint loaded successfully")
-                
-                if args.enable_flashvdm:
-                    rgbd_worker.enable_flashvdm(mc_algo=mc_algo)
-                if args.compile:
-                    rgbd_worker.compile()
+                    raise FileNotFoundError(f"Checkpoint file not found: {last_ckpt_path}")
             else:
-                print(f"Checkpoint file not found: {last_ckpt_path}")
-                print("RGBD functionality will be disabled")
-        else:
-            print(f"RGBD model path {args.rgbd_model_path} does not exist, RGBD functionality will be disabled")
-    except Exception as e:
-        print(f"Failed to load RGBD model: {e}")
-        print("RGBD functionality will be disabled")
-        import traceback
-        traceback.print_exc()
+                raise FileNotFoundError(f"RGBD model path {args.rgbd_model_path} does not exist")
+        except Exception as e:
+            print(f"Failed to load RGBD model: {e}")
+            print("Falling back to standard RGB model...")
+            import traceback
+            traceback.print_exc()
+            # 如果RGBD模型加载失败，回退到RGB模型
+            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                args.model_path,
+                subfolder=args.subfolder,
+                use_safetensors=False,
+                device=args.device,
+            )
+            if args.enable_flashvdm:
+                mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
+                i23d_worker.enable_flashvdm(mc_algo=mc_algo)
+            if args.compile:
+                i23d_worker.compile()
+            args.model_type = 'rgb'  # 更新模型类型标记
 
     floater_remove_worker = FloaterRemover()
     degenerate_face_remove_worker = DegenerateFaceRemover()
