@@ -307,16 +307,41 @@ def _gen_shape(
     if use_rgbd_model and depth_image is not None and rgbd_worker is not None:
         # 使用RGBD模型进行推理
         print("Using RGBD model for depth-aware generation")
-        # 处理深度图
-        if depth_image.mode != "L":
-            depth_image = depth_image.convert("L")  # 转换为灰度图
+        
+        # 使用统一的深度图处理工具
+        from depth_processing_utils import process_depth_for_gradio, validate_depth_processing
+        
+        # 获取RGB掩码（如果有背景移除）
+        rgb_mask = None
+        if hasattr(image, 'mode') and image.mode == 'RGBA':
+            # 如果RGB图像有alpha通道，提取作为掩码
+            import numpy as np
+            rgb_array = np.array(image)
+            if rgb_array.shape[2] == 4:  # RGBA
+                rgb_mask = rgb_array[:, :, 3] / 255.0
+        
+        # 处理深度图（与hy3dshape保持一致）
+        # 注意：gradio输入的PNG深度图通常以毫米为单位，需要转换为米
+        depth_image_processed, depth_array = process_depth_for_gradio(
+            depth_image=depth_image,
+            rgb_mask=rgb_mask,
+            depth_clip_range=[0.0, 10.0],
+            depth_mean=0.5,
+            depth_std=0.5,
+            input_unit='mm'  # 明确指定PNG深度图单位为毫米
+        )
+        
+        # 验证处理结果
+        is_valid = validate_depth_processing(depth_array, expected_range=(-1.0, 1.0))
+        if not is_valid:
+            print("Warning: Depth processing may have issues, but continuing...")
         
         # 调用RGBD模型的推理函数
         # 注意：这里需要根据实际的RGBD模型接口进行调整
         try:
             outputs = rgbd_worker(
                 image=image,
-                depth_image=depth_image,  # 传递深度图
+                depth_image=depth_image_processed,  # 传递处理后的深度图
                 num_inference_steps=steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
@@ -357,8 +382,18 @@ def _gen_shape(
     mesh = export_to_trimesh(outputs)[0]
     time_meta['export to trimesh'] = time.time() - tmp_start
 
-    stats['number_of_faces'] = mesh.faces.shape[0]
-    stats['number_of_vertices'] = mesh.vertices.shape[0]
+    # 添加mesh有效性检查，防止AttributeError
+    if mesh is not None and hasattr(mesh, 'faces') and hasattr(mesh, 'vertices'):
+        stats['number_of_faces'] = mesh.faces.shape[0]
+        stats['number_of_vertices'] = mesh.vertices.shape[0]
+    else:
+        print("Warning: Generated mesh is None or invalid, using default stats")
+        stats['number_of_faces'] = 0
+        stats['number_of_vertices'] = 0
+        # 如果mesh为None，创建一个简单的默认mesh避免后续错误
+        if mesh is None:
+            import trimesh
+            mesh = trimesh.Trimesh(vertices=[[0,0,0]], faces=[])
 
     stats['time'] = time_meta
     main_image = image if not MV_MODE else image['front']

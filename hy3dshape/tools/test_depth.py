@@ -3,7 +3,7 @@ import Imath
 import numpy as np
 import cv2
 # 读取EXR深度图
-file = OpenEXR.InputFile('mini_depth_trainset/preprocessed/GTP_CTeenW_Ema_09_Stg_Hat_Lsn_Ccs_Mgr/render_cond/000_depth.exr')
+file = OpenEXR.InputFile('mini_depth_trainset/preprocessed/3d66Model_515551/render_cond/008_depth.exr')
 dw = file.header()['dataWindow']
 size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
 
@@ -26,6 +26,38 @@ print(f"有效深度值均值: {filtered_depth[valid_mask].mean()}")
 cv2.imshow('Filtered Depth (<=100)', filtered_depth.astype(np.uint16)*1000)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
+
+# 保存深度图为PNG格式
+def save_depth_as_png(depth_map, filename, normalize=True):
+    """
+    将深度图保存为PNG格式
+    depth_map: 深度图数组
+    filename: 输出文件名
+    normalize: 是否归一化到0-255范围
+    """
+    if normalize:
+        # 归一化到0-255范围
+        valid_mask = (depth_map > 0) & (depth_map <= 100)
+        if np.any(valid_mask):
+            min_depth = depth_map[valid_mask].min()
+            max_depth = depth_map[valid_mask].max()
+            normalized_depth = np.zeros_like(depth_map)
+            normalized_depth[valid_mask] = ((depth_map[valid_mask] - min_depth) / (max_depth - min_depth) * 255)
+            depth_to_save = normalized_depth.astype(np.uint8)
+        else:
+            depth_to_save = np.zeros_like(depth_map, dtype=np.uint8)
+    else:
+        # 直接转换为16位PNG (保持原始深度值)
+        depth_to_save = (filtered_depth * 1000).astype(np.uint16)  # 乘以1000保持精度
+    
+    cv2.imwrite(filename, depth_to_save)
+    print(f"深度图已保存为: {filename}")
+
+# 保存归一化的深度图 (8位PNG)
+save_depth_as_png(filtered_depth, "depth_normalized.png", normalize=True)
+
+# 保存原始深度值的深度图 (16位PNG)
+save_depth_as_png(filtered_depth, "depth_original.png", normalize=False)
 
 # 生成点云
 def depth_to_pointcloud(depth_map, fx=525.0, fy=525.0, cx=320.0, cy=240.0):
