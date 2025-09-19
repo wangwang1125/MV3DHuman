@@ -933,12 +933,12 @@ if __name__ == '__main__':
                             new_state_dict[new_key] = value
                         else:
                             new_state_dict[key] = value
-                    # 使用pipeline的transformer模型来加载权重
-                    rgbd_worker.transformer.load_state_dict(new_state_dict, strict=False)
+                    # 使用pipeline的model来加载权重
+                    rgbd_worker.model.load_state_dict(new_state_dict, strict=False)
                     print("RGBD model checkpoint loaded successfully")
                 else:
-                    # 使用pipeline的transformer模型来加载权重
-                    rgbd_worker.transformer.load_state_dict(checkpoint, strict=False)
+                    # 使用pipeline的model来加载权重
+                    rgbd_worker.model.load_state_dict(checkpoint, strict=False)
                     print("RGBD model checkpoint loaded successfully")
                 
                 if args.enable_flashvdm:
