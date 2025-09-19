@@ -549,13 +549,11 @@ def build_app():
                                 label='Depth Map (Optional)', 
                                 type='pil', 
                                 image_mode='L',  # Grayscale for depth
-                                height=140,
-                                info='Upload a depth map to use RGBD model. Leave empty to use RGB-only model.'
+                                height=140
                             )
                             use_rgbd_model = gr.Checkbox(
                                 label='Enable RGBD Model',
-                                value=False,
-                                info='Automatically enabled when depth map is provided'
+                                value=False
                             )
                         caption = gr.State(None)
 #                    with gr.Tab('Text Prompt', id='tab_txt_prompt', visible=HAS_T2I and not MV_MODE) as tab_tp:
@@ -590,13 +588,10 @@ def build_app():
                     with gr.Tab("Options", id='tab_options', visible=TURBO_MODE):
                         gen_mode = gr.Radio(
                             label='Generation Mode',
-                            info='Recommendation: Turbo for most cases, \
-Fast for very complex cases, Standard seldom use.',
                             choices=['Turbo', 'Fast', 'Standard'], 
                             value='Turbo')
                         decode_mode = gr.Radio(
                             label='Decoding Mode',
-                            info='The resolution for exporting mesh from generated vectset',
                             choices=['Low', 'Standard', 'High'],
                             value='Standard')
                     with gr.Tab('Advanced Options', id='tab_advanced_options'):
@@ -938,10 +933,12 @@ if __name__ == '__main__':
                             new_state_dict[new_key] = value
                         else:
                             new_state_dict[key] = value
-                    rgbd_worker.load_state_dict(new_state_dict, strict=False)
+                    # 使用pipeline的transformer模型来加载权重
+                    rgbd_worker.transformer.load_state_dict(new_state_dict, strict=False)
                     print("RGBD model checkpoint loaded successfully")
                 else:
-                    rgbd_worker.load_state_dict(checkpoint, strict=False)
+                    # 使用pipeline的transformer模型来加载权重
+                    rgbd_worker.transformer.load_state_dict(checkpoint, strict=False)
                     print("RGBD model checkpoint loaded successfully")
                 
                 if args.enable_flashvdm:
