@@ -582,7 +582,7 @@ def build_app():
                             with gr.Row():
                                 depth_image = gr.Image(
                                     label='Depth Map (Required for RGBD model)', 
-                                    type='pil', 
+                                    type='filepath', 
                                     height=140
                                 )
                                 # 显示当前模型类型信息

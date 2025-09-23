@@ -12,19 +12,6 @@ import torch
 from typing import Tuple, Optional, Union
 
 
-def detect_depth_unit(depth_array: np.ndarray) -> str:
-    """
-    检测深度图的单位，支持16位深度图
-    
-    Args:
-        depth_array (np.ndarray): 深度图数组
-    
-    Returns:
-        str: 深度图单位类型，默认为'mm'
-    """
-    # 简化逻辑：默认PNG深度图都是毫米单位
-    return 'mm'
-
 
 def load_depth_image(depth_path: str, depth_clip_range: list = [0.0, 10.0]) -> np.ndarray:
     """
@@ -156,7 +143,7 @@ def apply_rgb_mask_to_depth(depth: np.ndarray,
     return masked_depth
 
 
-def process_depth_for_gradio(depth_image: Image.Image, 
+def process_depth_for_gradio(depth_image: str, 
                            rgb_mask: Optional[np.ndarray] = None,
                            depth_clip_range: list = [0.0, 10.0],
                            depth_mean: float = 0.5,
@@ -166,7 +153,7 @@ def process_depth_for_gradio(depth_image: Image.Image,
     为gradio_app.py处理深度图的统一接口，与hy3dshape训练时的处理保持一致
     
     Args:
-        depth_image (PIL.Image): 输入深度图
+        depth_image (PIL.Image or str): 输入深度图或文件路径
         rgb_mask (np.ndarray, optional): RGB掩码
         depth_clip_range (list): 深度值裁剪范围（单位：米）
         depth_mean (float): 标准化均值
@@ -177,9 +164,10 @@ def process_depth_for_gradio(depth_image: Image.Image,
         processed_image (PIL.Image): 处理后的深度图（用于显示）
         depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]）
     """
-    # 转换为numpy数组
-    depth_array = np.array(depth_image, dtype=np.float32)
-    
+    depth_array = cv2.imread(depth_image, cv2.IMREAD_ANYDEPTH)
+    depth_array = depth_array.astype(np.float32)
+    print(f"使用cv2读取16位深度图，原始值范围: {depth_array.min():.1f} - {depth_array.max():.1f}")
+
 
     # PNG深度图通常以毫米为单位，需要转换为米
     original_range = f"{depth_array.min():.1f}mm - {depth_array.max():.1f}mm"
@@ -210,28 +198,6 @@ def process_depth_for_gradio(depth_image: Image.Image,
     processed_image = Image.fromarray(depth_display, mode='L')
     
     return processed_image, depth_normalized
-
-
-def detect_depth_unit(depth_array: np.ndarray) -> str:
-    """
-    自动检测深度图的单位
-    
-    Args:
-        depth_array (np.ndarray): 深度图数组
-    
-    Returns:
-        str: 检测到的单位 ('mm' 或 'm')
-    """
-    max_depth = np.max(depth_array)
-    mean_depth = np.mean(depth_array[depth_array > 0])
-    
-    # 启发式规则：
-    # - 如果最大深度值 > 100，很可能是毫米单位
-    # - 如果平均深度值 > 50，很可能是毫米单位
-    if max_depth > 100 or mean_depth > 50:
-        return 'mm'
-    else:
-        return 'm'
 
 
 def validate_depth_processing(depth_array: np.ndarray, 
