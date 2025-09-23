@@ -12,6 +12,20 @@ import torch
 from typing import Tuple, Optional, Union
 
 
+def detect_depth_unit(depth_array: np.ndarray) -> str:
+    """
+    检测深度图的单位，默认PNG深度图为毫米单位
+    
+    Args:
+        depth_array (np.ndarray): 深度图数组
+    
+    Returns:
+        str: 深度图单位类型，默认为'mm'
+    """
+    # 简化逻辑：默认PNG深度图都是毫米单位
+    return 'mm'
+
+
 def load_depth_image(depth_path: str, depth_clip_range: list = [0.0, 10.0]) -> np.ndarray:
     """
     加载深度图像，支持多种格式
@@ -147,9 +161,9 @@ def process_depth_for_gradio(depth_image: Image.Image,
                            depth_clip_range: list = [0.0, 10.0],
                            depth_mean: float = 0.5,
                            depth_std: float = 0.5,
-                           input_unit: str = 'mm') -> Tuple[Image.Image, np.ndarray]:
+                           input_unit: str = 'auto') -> Tuple[Image.Image, np.ndarray]:
     """
-    为gradio_app.py处理深度图的统一接口
+    为gradio_app.py处理深度图的统一接口，与hy3dshape训练时的处理保持一致
     
     Args:
         depth_image (PIL.Image): 输入深度图
@@ -157,11 +171,11 @@ def process_depth_for_gradio(depth_image: Image.Image,
         depth_clip_range (list): 深度值裁剪范围（单位：米）
         depth_mean (float): 标准化均值
         depth_std (float): 标准化标准差
-        input_unit (str): 输入深度图的单位，'mm'或'm'
+        input_unit (str): 输入深度图的单位，'auto'自动检测、'normalized'已归一化、'mm'毫米、'm'米
     
     Returns:
         processed_image (PIL.Image): 处理后的深度图（用于显示）
-        depth_array (np.ndarray): 标准化后的深度数组（用于模型）
+        depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]）
     """
     # 转换为灰度图
     if depth_image.mode != "L":
@@ -170,42 +184,33 @@ def process_depth_for_gradio(depth_image: Image.Image,
     # 转换为numpy数组
     depth_array = np.array(depth_image, dtype=np.float32)
     
-    # 关键修复：单位转换
-    if input_unit == 'auto':
-        # 自动检测深度图单位
-        detected_unit = detect_depth_unit(depth_array)
-        print(f"自动检测深度图单位: {detected_unit}")
-        input_unit = detected_unit
+
+    # PNG深度图通常以毫米为单位，需要转换为米
+    original_range = f"{depth_array.min():.1f}mm - {depth_array.max():.1f}mm"
+    depth_array = depth_array / 1000.0  # mm -> m
+    converted_range = f"{depth_array.min():.3f}m - {depth_array.max():.3f}m"
+    print(f"深度图单位转换: {original_range} -> {converted_range}")
     
-    if input_unit == 'mm':
-        # PNG深度图通常以毫米为单位，需要转换为米以匹配训练数据
-        original_range = f"{depth_array.min():.1f}mm - {depth_array.max():.1f}mm"
-        depth_array = depth_array / 1000.0  # mm -> m
-        converted_range = f"{depth_array.min():.3f}m - {depth_array.max():.3f}m"
-        print(f"深度图单位转换: {original_range} -> {converted_range}")
-    elif input_unit == 'm':
-        # EXR深度图已经是米单位，无需转换
-        print(f"深度图单位: m, 范围: {depth_array.min():.3f}m - {depth_array.max():.3f}m")
-    else:
-        print(f"警告: 未知的深度图单位 '{input_unit}'，假设为米")
-    
-    # 1. 裁剪深度值到合理范围（现在单位统一为米）
+    # 裁剪到合理范围并归一化到[0,1]
     depth_array = np.clip(depth_array, depth_clip_range[0], depth_clip_range[1])
-    
-    # 2. 归一化到[0,1]
     depth_min, depth_max = depth_clip_range
     if depth_max > depth_min:
         depth_array = (depth_array - depth_min) / (depth_max - depth_min)
+
     
-    # 3. 应用RGB掩码（如果提供）
+    # 应用RGB掩码（如果提供）
     if rgb_mask is not None:
         depth_array = apply_rgb_mask_to_depth(depth_array, rgb_mask)
     
-    # 4. 标准化（用于模型输入）
-    depth_normalized = normalize_depth_for_model(depth_array, depth_mean, depth_std)
+    # 标准化到[-1,1]范围（与训练时一致）
+    # 训练时使用: (depth - 0.5) / 0.5，将[0,1]映射到[-1,1]
+    depth_normalized = (depth_array - depth_mean) / depth_std
     
-    # 5. 转换回PIL图像（用于显示）
-    depth_display = denormalize_depth_for_display(depth_normalized, depth_mean, depth_std)
+    print(f"最终深度值范围: [{depth_normalized.min():.3f}, {depth_normalized.max():.3f}]")
+    
+    # 转换回PIL图像（用于显示，将[-1,1]映射回[0,255]）
+    depth_display = ((depth_normalized * depth_std + depth_mean) * 255).astype(np.uint8)
+    depth_display = np.clip(depth_display, 0, 255)
     processed_image = Image.fromarray(depth_display, mode='L')
     
     return processed_image, depth_normalized
