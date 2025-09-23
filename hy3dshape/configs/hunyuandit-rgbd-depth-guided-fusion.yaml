@@ -158,7 +158,7 @@ callbacks:
     target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalFixASLDiffuserLogger
     params:
       step_frequency: 250
-      test_data_path: "tools/mini_testset/images.json"'
+      test_data_path: "tools/mini_testset/images.json"
 
 # 微调特定配置
 finetuning:
