@@ -51,8 +51,14 @@ dataset:
       dropout_prob: 0.1
 
 model:
-  target: hy3dshape.models.dit_asl.DiffusionTransformerASL
+  target: hy3dshape.models.diffusion.flow_matching_sit.Diffuser
   params:
+    first_stage_key: "surface"
+    cond_stage_key: "image"
+    depth_stage_key: "depth"
+    scale_by_std: false
+    z_scale_factor: 1.0039506158752403
+    torch_compile: false
     #! VAE
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
