@@ -1,0 +1,180 @@
+name: "HunyuanDiT RGBD深度引导融合; VAE: 4096 token length; ImageEncoder: DINO-v2 Large + 深度引导融合; ImageSize: 518"
+# RGBD深度引导融合训练配置 - 使用类似LoRA的深度引导策略
+
+training:
+  steps: 100000  # 初始测试步数
+  use_amp: true
+  amp_type: "bf16"
+  base_lr: 1e-4  # 适中的学习率
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
+  every_n_train_steps: 2000
+  val_check_interval: 2000
+  limit_val_batches: 16
+
+dataset:
+  target: hy3dshape.data.rgbd_dit_asl.RGBDAlignedShapeLatentModule
+  params:
+    #! Base setting
+    batch_size: 2
+    num_workers: 8
+    val_num_workers: 2
+
+    # Data 
+    train_data_list: tools/mini_depth_trainset/preprocessed
+    val_data_list: tools/mini_depth_trainset/preprocessed
+
+    #! Image loading
+    cond_stage_key: "image"
+    depth_stage_key: "depth"
+    image_size: 518
+    mean: &mean [0.5, 0.5, 0.5]
+    std: &std [0.5, 0.5, 0.5]
+    
+    # 深度图预处理参数
+    depth_mean: &depth_mean [0.5]
+    depth_std: &depth_std [0.5]
+    depth_normalize: true
+    depth_clip_range: [0.0, 10.0]
+    require_depth: true
+
+    #! Point cloud sampling
+    pc_size: &pc_size 81920
+    pc_sharpedge_size: &pc_sharpedge_size 0
+    sharpedge_label: &sharpedge_label true
+    return_normal: true
+
+    #! Augmentation
+    padding: true
+    depth_augmentation:
+      noise_std: 0.01
+      dropout_prob: 0.05
+
+model:
+  target: hy3dshape.models.dit_asl.DiffusionTransformerASL
+  params:
+    #! VAE
+    first_stage_config:
+      target: hy3dshape.models.autoencoders.ShapeVAE
+      from_pretrained: tencent/Hunyuan3D-2.1
+
+    cond_stage_config:
+      target: hy3dshape.models.conditioner.RGBDImageEncoder
+      params:
+        drop_ratio: 0.1
+        freeze_rgb_encoder: true  # 冻结RGB编码器参数
+        main_image_encoder:
+            type: DinoImageEncoder 
+            kwargs:
+                version: 'facebook/dinov2-large'
+                image_size: 518
+                use_cls_token: true
+        
+        # 深度编码器配置
+        depth_encoder_config:
+          type: 'lightweight'  # 使用轻量级深度编码器
+          input_channels: 1
+          hidden_dim: 768
+          num_layers: 4
+        
+        # 深度引导融合配置
+        fusion_config:
+          type: 'depth_guided'  # 使用新的深度引导融合
+          rgb_dim: 1024
+          depth_dim: 768
+          output_dim: 1024
+          guidance_rank: 64      # LoRA风格的引导矩阵秩
+          guidance_alpha: 0.1    # 引导强度
+          num_guidance_layers: 2
+          dropout: 0.1
+
+    denoiser_cfg:
+      target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
+      from_pretrained: tencent/Hunyuan3D-2.1
+      freeze_pretrained: true  # 冻结预训练的DiT参数
+        
+    scheduler_cfg:
+      transport:
+        target: hy3dshape.models.diffusion.transport.create_transport
+        params:
+          path_type: Linear
+          prediction: velocity
+      sampler:
+        target: hy3dshape.models.diffusion.transport.Sampler
+        params: {}
+        ode_params:
+          sampling_method: euler
+          num_steps: 50
+
+optimizer:
+  target: torch.optim.AdamW
+  params:
+    lr: 1.0e-4
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  target: hy3dshape.utils.lr_scheduler.LambdaWarmUpCosineFactorScheduler
+  params:
+    warm_up_steps: 1000
+    f_start: 1.0e-6
+    f_max: 1.0
+    f_min: 0.02
+    cycle_lengths: [10000000000000]
+    f_start_cyclic: [1.0e-6]
+    f_max_cyclic: [1.0]
+    f_min_cyclic: [0.02]
+
+pipeline:
+  target: hy3dshape.pipelines.HunyuanDiTPipeline
+  params:
+    scheduler_type: "flow_euler"
+    num_inference_steps: 30
+
+image_processor:
+  target: hy3dshape.utils.image_processor.ImageProcessor
+  params:
+    mean: *mean
+    std: *std
+
+callbacks:
+  logger:
+    target: hy3dshape.utils.loggers.ImageLogger
+    params:
+      batch_frequency: 2000
+      max_images: 8
+      increase_log_steps: False
+      log_first_step: True
+      log_images_kwargs:
+        use_ema_scope: False
+        N: 8
+        n_rows: 2
+        # 深度图可视化
+        log_depth: true
+        depth_colormap: 'viridis'
+
+# 微调特定配置
+finetuning:
+  # 参数冻结策略
+  freeze_patterns:
+    - "first_stage_model.*"  # 冻结VAE
+    - "cond_stage_model.main_image_encoder.*"  # 冻结RGB编码器
+    - "model.*.attn.*"  # 冻结DiT的注意力层
+    - "model.*.mlp.*"   # 冻结DiT的MLP层
+  
+  # 可训练参数模式
+  trainable_patterns:
+    - "cond_stage_model.depth_encoder.*"  # 训练深度编码器
+    - "cond_stage_model.fusion.*"         # 训练融合模块
+    - "model.*.adaln.*"                   # 训练AdaLN层
+  
+  # 学习率策略
+  lr_multipliers:
+    "cond_stage_model.depth_encoder": 1.0
+    "cond_stage_model.fusion": 1.0
+    "model.*.adaln": 0.1  # 对DiT的AdaLN使用较小学习率
+  
+  # 正则化
+  regularization:
+    guidance_delta_l2: 0.001  # 对引导增量添加L2正则化
+    depth_feature_dropout: 0.1

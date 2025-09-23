@@ -298,6 +298,314 @@ class CrossModalFusion(nn.Module):
         return zero_embedding
 
 
+class DepthGuidedFusion(nn.Module):
+    """
+    深度引导融合模块
+    
+    核心思想：
+    1. 保持RGB特征的主导地位
+    2. 深度特征作为引导信号，通过轻量级的方式调制RGB特征
+    3. 类似LoRA的低秩分解思想，减少参数量和计算复杂度
+    """
+    
+    def __init__(
+        self,
+        rgb_dim=1024,
+        depth_dim=1024,
+        output_dim=1024,
+        guidance_rank=64,  # 引导矩阵的秩，类似LoRA的rank
+        guidance_alpha=0.1,  # 引导强度，类似LoRA的alpha
+        num_guidance_layers=2,  # 引导层数
+        dropout=0.1,
+        **kwargs
+    ):
+        super().__init__()
+        
+        self.rgb_dim = rgb_dim
+        self.depth_dim = depth_dim
+        self.output_dim = output_dim
+        self.guidance_rank = guidance_rank
+        self.guidance_alpha = guidance_alpha
+        
+        # RGB特征的直通路径（保持主导地位）
+        self.rgb_passthrough = nn.Linear(rgb_dim, output_dim)
+        
+        # 深度引导模块（类似LoRA的低秩分解）
+        self.depth_guidance = DepthGuidanceModule(
+            depth_dim=depth_dim,
+            rgb_dim=rgb_dim,
+            guidance_rank=guidance_rank,
+            guidance_alpha=guidance_alpha,
+            num_layers=num_guidance_layers,
+            dropout=dropout
+        )
+        
+        # 输出层
+        self.output_norm = nn.LayerNorm(output_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """权重初始化"""
+        # RGB直通路径使用标准初始化
+        nn.init.xavier_uniform_(self.rgb_passthrough.weight)
+        nn.init.zeros_(self.rgb_passthrough.bias)
+    
+    def forward(self, rgb_features, depth_features, **kwargs):
+        """
+        前向传播
+        
+        Args:
+            rgb_features: RGB特征 [B, N, rgb_dim]
+            depth_features: 深度特征 [B, N, depth_dim]
+        
+        Returns:
+            fused_features: 融合后的特征 [B, N, output_dim]
+        """
+        # RGB特征的主路径
+        rgb_main = self.rgb_passthrough(rgb_features)
+        
+        # 深度引导调制
+        guidance_delta = self.depth_guidance(depth_features, rgb_features)
+        
+        # 融合：RGB主特征 + 深度引导的增量
+        fused = rgb_main + guidance_delta
+        
+        # 输出处理
+        output = self.output_norm(fused)
+        output = self.dropout(output)
+        
+        return output
+    
+    def unconditional_embedding(self, batch_size, num_patches, **kwargs):
+        """生成无条件嵌入"""
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        
+        zero_embedding = torch.zeros(
+            batch_size,
+            num_patches,
+            self.output_dim,
+            device=device,
+            dtype=dtype
+        )
+        
+        return zero_embedding
+
+
+class DepthGuidanceModule(nn.Module):
+    """
+    深度引导模块
+    
+    使用低秩分解的思想，让深度特征生成对RGB特征的调制信号
+    """
+    
+    def __init__(
+        self,
+        depth_dim=1024,
+        rgb_dim=1024,
+        guidance_rank=64,
+        guidance_alpha=0.1,
+        num_layers=2,
+        dropout=0.1
+    ):
+        super().__init__()
+        
+        self.guidance_rank = guidance_rank
+        self.guidance_alpha = guidance_alpha
+        
+        # 深度特征编码器
+        layers = []
+        in_dim = depth_dim
+        for i in range(num_layers):
+            out_dim = guidance_rank * 2 if i == 0 else guidance_rank
+            layers.extend([
+                nn.Linear(in_dim, out_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ])
+            in_dim = out_dim
+        
+        # 移除最后的dropout
+        if layers:
+            layers = layers[:-1]
+        
+        self.depth_encoder = nn.Sequential(*layers)
+        
+        # 引导信号生成器（类似LoRA的A和B矩阵）
+        self.guidance_down = nn.Linear(rgb_dim, guidance_rank, bias=False)
+        self.guidance_up = nn.Linear(guidance_rank, rgb_dim, bias=False)
+        
+        # 深度条件的门控机制
+        self.depth_gate = nn.Sequential(
+            nn.Linear(guidance_rank, guidance_rank),
+            nn.Sigmoid()
+        )
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """权重初始化"""
+        # 引导矩阵使用小的随机初始化
+        nn.init.normal_(self.guidance_down.weight, std=0.02)
+        nn.init.zeros_(self.guidance_up.weight)
+        
+        # 深度编码器使用标准初始化
+        for module in self.depth_encoder:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        
+        # 门控网络初始化
+        for module in self.depth_gate:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, depth_features, rgb_features):
+        """
+        生成深度引导的调制信号
+        
+        Args:
+            depth_features: 深度特征 [B, N, depth_dim]
+            rgb_features: RGB特征 [B, N, rgb_dim]
+        
+        Returns:
+            guidance_delta: 引导增量 [B, N, rgb_dim]
+        """
+        # 编码深度特征
+        depth_encoded = self.depth_encoder(depth_features)  # [B, N, guidance_rank]
+        
+        # 生成门控信号
+        gate = self.depth_gate(depth_encoded)  # [B, N, guidance_rank]
+        
+        # 类似LoRA的低秩分解
+        # 将RGB特征投影到低维空间
+        rgb_down = self.guidance_down(rgb_features)  # [B, N, guidance_rank]
+        
+        # 深度引导的调制
+        modulated = rgb_down * gate  # 深度特征调制RGB的低维表示
+        
+        # 投影回原始维度
+        guidance_delta = self.guidance_up(modulated)  # [B, N, rgb_dim]
+        
+        # 应用引导强度
+        guidance_delta = guidance_delta * self.guidance_alpha
+        
+        return guidance_delta
+
+
+class AdaptiveDepthGuidedFusion(nn.Module):
+    """
+    自适应深度引导融合
+    
+    根据深度信息的质量动态调整引导强度
+    """
+    
+    def __init__(
+        self,
+        rgb_dim=1024,
+        depth_dim=1024,
+        output_dim=1024,
+        guidance_rank=64,
+        base_alpha=0.1,
+        adaptive_alpha=True,
+        dropout=0.1,
+        **kwargs
+    ):
+        super().__init__()
+        
+        self.base_alpha = base_alpha
+        self.adaptive_alpha = adaptive_alpha
+        self.output_dim = output_dim
+        
+        # 基础深度引导模块
+        self.depth_guidance = DepthGuidanceModule(
+            depth_dim=depth_dim,
+            rgb_dim=rgb_dim,
+            guidance_rank=guidance_rank,
+            guidance_alpha=1.0,  # 在这里设为1.0，由外部控制
+            dropout=dropout,
+            **kwargs
+        )
+        
+        # RGB直通路径
+        self.rgb_passthrough = nn.Linear(rgb_dim, output_dim)
+        
+        # 自适应alpha预测器
+        if adaptive_alpha:
+            self.alpha_predictor = nn.Sequential(
+                nn.Linear(depth_dim, guidance_rank),
+                nn.ReLU(),
+                nn.Linear(guidance_rank, 1),
+                nn.Sigmoid()
+            )
+        
+        # 输出层
+        self.output_norm = nn.LayerNorm(output_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """权重初始化"""
+        nn.init.xavier_uniform_(self.rgb_passthrough.weight)
+        nn.init.zeros_(self.rgb_passthrough.bias)
+        
+        if self.adaptive_alpha:
+            for module in self.alpha_predictor:
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+    
+    def forward(self, rgb_features, depth_features, **kwargs):
+        """前向传播"""
+        # RGB主路径
+        rgb_main = self.rgb_passthrough(rgb_features)
+        
+        # 生成引导增量
+        guidance_delta = self.depth_guidance(depth_features, rgb_features)
+        
+        # 自适应引导强度
+        if self.adaptive_alpha:
+            # 基于深度特征质量预测alpha
+            alpha = self.alpha_predictor(depth_features.mean(dim=1, keepdim=True))  # [B, 1, 1]
+            alpha = alpha * self.base_alpha
+        else:
+            alpha = self.base_alpha
+        
+        # 应用自适应引导强度
+        guidance_delta = guidance_delta * alpha
+        
+        # 融合
+        fused = rgb_main + guidance_delta
+        
+        # 输出处理
+        output = self.output_norm(fused)
+        output = self.dropout(output)
+        
+        return output
+    
+    def unconditional_embedding(self, batch_size, num_patches, **kwargs):
+        """生成无条件嵌入"""
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        
+        zero_embedding = torch.zeros(
+            batch_size,
+            num_patches,
+            self.output_dim,
+            device=device,
+            dtype=dtype
+        )
+        
+        return zero_embedding
+
+
 class SimpleCrossModalFusion(nn.Module):
     """
     简化版跨模态融合模块
