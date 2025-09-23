@@ -86,6 +86,7 @@ model:
         # 深度引导融合配置
         fusion_config:
           type: 'depth_guided'  # 使用新的深度引导融合
+          hidden_dim: 768        # 必需的隐藏维度参数
           rgb_dim: 1024
           depth_dim: 768
           output_dim: 1024

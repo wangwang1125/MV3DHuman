@@ -86,6 +86,7 @@ model:
         # 自适应深度引导融合配置
         fusion_config:
           type: 'adaptive_depth_guided'  # 使用自适应版本
+          hidden_dim: 768        # 必需的隐藏维度参数
           rgb_dim: 1024
           depth_dim: 768
           output_dim: 1024
