@@ -849,7 +849,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2.1')
     parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-1')
     parser.add_argument("--texgen_model_path", type=str, default='tencent/Hunyuan3D-2.1')
-    parser.add_argument("--rgbd_model_path", type=str, default='./hy3dshape/checkpoints/rgbd_finetuning_HunyuanDiT_RGBD微调;_VAE:_4096_token_length;_ImageEncoder:_DINO-v2_Large_+_深度编码器;_ImageSize:_518', help='Path to RGBD model checkpoints directory')
+    parser.add_argument("--rgbd_model_path", type=str, default='./hy3dshape/checkpoints/rgbd_finetuning', help='Path to RGBD model checkpoints directory')
     parser.add_argument('--model_type', type=str, choices=['rgb', 'rgbd'], default='rgbd', 
                        help='Choose which model to load: "rgb" for standard RGB model, "rgbd" for depth-aware RGBD model. Only the selected model will be loaded to save memory.')
     parser.add_argument('--port', type=int, default=8080)
