@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from .depth_guided_lora_fusion import DepthGuidedLoRAFusion, AdaptiveDepthGuidedLoRAFusion
 
 
 class CrossModalFusion(nn.Module):
@@ -59,6 +60,10 @@ class CrossModalFusion(nn.Module):
             self._build_gated_fusion()
         elif fusion_type == 'adaptive_fusion':
             self._build_adaptive_fusion()
+        elif fusion_type == 'depth_guided_lora':
+            self._build_depth_guided_lora_fusion(**kwargs)
+        elif fusion_type == 'adaptive_depth_guided_lora':
+            self._build_adaptive_depth_guided_lora_fusion(**kwargs)
         else:
             raise ValueError(f"Unsupported fusion type: {fusion_type}")
         
@@ -162,6 +167,47 @@ class CrossModalFusion(nn.Module):
             nn.LayerNorm(self.hidden_dim)
         )
     
+    def _build_depth_guided_lora_fusion(self, **kwargs):
+        """构建深度引导LoRA融合模块"""
+        # 提取LoRA相关参数
+        lora_rank = kwargs.get('lora_rank', 64)
+        lora_alpha = kwargs.get('lora_alpha', 16)
+        num_guidance_layers = kwargs.get('num_guidance_layers', 3)
+        
+        # 创建深度引导LoRA融合模块
+        self.depth_guided_lora = DepthGuidedLoRAFusion(
+            rgb_dim=self.hidden_dim,
+            depth_dim=self.hidden_dim,
+            hidden_dim=self.hidden_dim,
+            output_dim=self.hidden_dim,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            num_guidance_layers=num_guidance_layers,
+            dropout=kwargs.get('dropout', 0.1)
+        )
+    
+    def _build_adaptive_depth_guided_lora_fusion(self, **kwargs):
+        """构建自适应深度引导LoRA融合模块"""
+        # 提取相关参数
+        lora_rank = kwargs.get('lora_rank', 64)
+        lora_alpha = kwargs.get('lora_alpha', 16)
+        num_guidance_layers = kwargs.get('num_guidance_layers', 3)
+        num_scales = kwargs.get('num_scales', 3)
+        
+        # 创建自适应深度引导LoRA融合模块
+        self.adaptive_depth_guided_lora = AdaptiveDepthGuidedLoRAFusion(
+            rgb_dim=self.hidden_dim,
+            depth_dim=self.hidden_dim,
+            hidden_dim=self.hidden_dim,
+            output_dim=self.hidden_dim,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            num_heads=self.num_heads,
+            num_guidance_layers=num_guidance_layers,
+            num_scales=num_scales,
+            dropout=kwargs.get('dropout', 0.1)
+        )
+    
     def _init_weights(self):
         """初始化模型权重"""
         for module in self.modules():
@@ -197,8 +243,14 @@ class CrossModalFusion(nn.Module):
             fused = self._gated_fusion(rgb_proj, depth_proj)
         elif self.fusion_type == 'adaptive_fusion':
             fused = self._adaptive_fusion(rgb_proj, depth_proj)
+        elif self.fusion_type == 'depth_guided_lora':
+            # 深度引导LoRA融合已经包含输出投影，直接返回
+            return self.depth_guided_lora(rgb_proj, depth_proj, mask, **kwargs)
+        elif self.fusion_type == 'adaptive_depth_guided_lora':
+            # 自适应深度引导LoRA融合已经包含输出投影，直接返回
+            return self.adaptive_depth_guided_lora(rgb_proj, depth_proj, mask, **kwargs)
         
-        # 输出投影和归一化
+        # 输出投影和归一化（仅对传统融合方法）
         output = self.output_proj(fused)
         output = self.output_norm(output)
         

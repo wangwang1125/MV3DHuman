@@ -1,5 +1,5 @@
-name: "HunyuanDiT RGBD微调; VAE: 4096 token length; ImageEncoder: DINO-v2 Large + 深度编码器; ImageSize: 518"
-# RGBD微调训练配置 - 固定预训练参数，仅训练深度编码器和跨模态融合模块
+name: "HunyuanDiT RGBD深度引导LoRA融合微调; VAE: 4096 token length; ImageEncoder: DINO-v2 Large + 深度编码器; 融合方法: 深度引导LoRA; ImageSize: 518"
+# RGBD深度引导LoRA融合微调训练配置 - 使用类似LoRA的方法进行深度引导RGB特征融合
 
 training:
   steps: 5_0000_0000  # 减少训练步数，因为只训练部分参数
@@ -92,15 +92,26 @@ model:
           # num_heads: 8
           # dropout: 0.1
         
-        # 跨模态融合配置
+        # 跨模态融合配置 - 使用深度引导LoRA融合
         fusion_config:
-          type: 'cross_attention'  # 'cross_attention', 'concat_mlp', 'gated', 'adaptive', 'simple'
-          hidden_dim: 768
-          num_heads: 8
-          dropout: 0.1
-          # 其他融合类型的参数
-          # gate_activation: 'sigmoid'  # for gated fusion
-          # adaptive_layers: 2  # for adaptive fusion
+          type: 'depth_guided_lora'  # 使用深度引导LoRA融合
+          rgb_dim: 1024              # RGB特征维度 (DINOv2-large输出)
+          depth_dim: 768             # 深度特征维度
+          hidden_dim: 1024           # 隐藏层维度
+          output_dim: 1024           # 输出维度
+          lora_rank: 64              # LoRA秩，控制参数量和表达能力
+          lora_alpha: 16             # LoRA缩放因子
+          num_guidance_layers: 3     # 深度引导层数
+          dropout: 0.1               # Dropout率
+          use_bias: true             # 是否使用偏置
+          
+          # 可选：切换到自适应版本
+          # type: 'adaptive_depth_guided_lora'
+          # adaptive_config:
+          #   weight_dim: 512          # 权重生成器隐藏维度
+          #   num_weight_layers: 2     # 权重生成器层数
+          #   temperature: 1.0         # 软注意力温度
+          #   use_gating: true         # 使用门控机制
 
     denoiser_cfg:
       target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
@@ -160,16 +171,23 @@ callbacks:
         log_depth: true
         depth_mean: *depth_mean
         depth_std: *depth_std
+        # LoRA训练监控
+        log_lora_weights: true          # 记录LoRA权重变化
+        log_guidance_strength: true     # 记录深度引导强度
+        log_fusion_attention: true      # 记录融合注意力权重
     
     file_loggers:
         target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalFixASLDiffuserLogger
         params:
           step_frequency: 250
           test_data_path: "tools/mini_testset/images.json"
-          # 可以添加包含深度图的测试数据路径
-          # test_depth_data_path: "tools/mini_testset/depths.json"
+          # 深度图测试数据路径
+          test_depth_data_path: "tools/mini_depth_testset"
+          # LoRA融合效果评估
+          evaluate_lora_efficiency: true     # 评估LoRA参数效率
+          log_fusion_visualization: true     # 可视化融合过程
 
-# 微调特定配置
+# 微调特定配置 - 深度引导LoRA融合
 finetuning:
   # 参数冻结策略
   freeze_strategy:
@@ -178,13 +196,25 @@ finetuning:
     dit_backbone: true    # 冻结DiT主干网络
     depth_encoder: false  # 训练深度编码器
     fusion_module: false  # 训练融合模块
+    lora_parameters: false # 训练LoRA参数
   
-  # 学习率策略
+  # 学习率策略 - LoRA优化
   lr_strategy:
     depth_encoder_lr_multiplier: 1.0    # 深度编码器学习率倍数
     fusion_module_lr_multiplier: 1.0    # 融合模块学习率倍数
+    lora_lr_multiplier: 2.0             # LoRA参数使用更高学习率
+    guidance_lr_multiplier: 1.5         # 深度引导层学习率倍数
   
-  # 正则化
+  # LoRA特定配置
+  lora_config:
+    rank_adaptation: true               # 自适应调整LoRA秩
+    alpha_scheduling: true              # 动态调整alpha值
+    gradient_checkpointing: true        # 使用梯度检查点节省内存
+    
+  # 正则化 - 增强LoRA训练
   regularization:
-    feature_consistency_loss: 0.1  # RGB-深度特征一致性损失权重
-    fusion_sparsity_loss: 0.01     # 融合模块稀疏性损失权重
+    feature_consistency_loss: 0.1      # RGB-深度特征一致性损失权重
+    fusion_sparsity_loss: 0.01         # 融合模块稀疏性损失权重
+    lora_weight_decay: 0.001           # LoRA权重衰减
+    guidance_strength_penalty: 0.01    # 引导强度惩罚，防止过拟合
+    orthogonal_regularization: 0.005   # LoRA矩阵正交性正则化
