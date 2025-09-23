@@ -143,7 +143,7 @@ def apply_rgb_mask_to_depth(depth: np.ndarray,
     return masked_depth
 
 
-def process_depth_for_gradio(depth_image: str, 
+def process_depth_for_gradio(depth_image: Union[str, object], 
                            rgb_mask: Optional[np.ndarray] = None,
                            depth_clip_range: list = [0.0, 10.0],
                            depth_mean: float = 0.5,
@@ -153,7 +153,7 @@ def process_depth_for_gradio(depth_image: str,
     为gradio_app.py处理深度图的统一接口，与hy3dshape训练时的处理保持一致
     
     Args:
-        depth_image (PIL.Image or str): 输入深度图或文件路径
+        depth_image (str or file object): 输入深度图文件路径或gradio文件对象
         rgb_mask (np.ndarray, optional): RGB掩码
         depth_clip_range (list): 深度值裁剪范围（单位：米）
         depth_mean (float): 标准化均值
@@ -164,10 +164,27 @@ def process_depth_for_gradio(depth_image: str,
         processed_image (PIL.Image): 处理后的深度图（用于显示）
         depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]）
     """
-    print(depth_image)
-    depth_array = cv2.imread(depth_image, cv2.IMREAD_UNCHANGED)
-    depth_array = depth_array.astype(np.float32)
-    print(f"使用cv2读取16位深度图，原始值范围: {depth_array.min():.1f} - {depth_array.max():.1f}")
+    # 处理gradio文件对象
+    if hasattr(depth_image, 'name'):
+        # gradio文件对象，获取文件路径
+        depth_path = depth_image.name
+        print(f"从gradio文件对象获取路径: {depth_path}")
+    elif isinstance(depth_image, str):
+        # 直接的文件路径
+        depth_path = depth_image
+        print(f"使用文件路径: {depth_path}")
+    else:
+        raise ValueError(f"不支持的深度图输入类型: {type(depth_image)}")
+    
+    # 使用PIL Image读取，保持16位精度
+    try:
+        depth_image_pil = Image.open(depth_path)
+        depth_array = np.array(depth_image_pil, dtype=np.float32)
+        print(f"使用PIL Image读取16位深度图，原始值范围: {depth_array.min():.1f} - {depth_array.max():.1f}")
+        print(f"图像模式: {depth_image_pil.mode}, 数据类型: {depth_array.dtype}")
+    except Exception as e:
+        raise ValueError(f"无法读取深度图文件: {depth_path}, 错误: {e}")
+    
 
 
     # PNG深度图通常以毫米为单位，需要转换为米

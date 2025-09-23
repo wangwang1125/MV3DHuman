@@ -580,10 +580,10 @@ def build_app():
                         # 根据模型类型显示深度图输入
                         if args.model_type == 'rgbd':
                             with gr.Row():
-                                depth_image = gr.Image(
-                                    label='Depth Map (Required for RGBD model)', 
-                                    type='filepath', 
-                                    height=140
+                                depth_image = gr.File(
+                                    label='Depth Map (Required for RGBD model - Upload 16-bit PNG)', 
+                                    file_types=['.png', '.tiff', '.tif', '.exr', '.npy', '.npz'],
+                                    file_count='single'
                                 )
                                 # 显示当前模型类型信息
                                 gr.HTML(f"""
