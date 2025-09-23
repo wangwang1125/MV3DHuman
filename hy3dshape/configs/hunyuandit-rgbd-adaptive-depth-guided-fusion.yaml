@@ -110,53 +110,53 @@ model:
         params: {}
         ode_params:
           sampling_method: euler
-          num_steps: 50
+          num_steps: &num_steps 50
 
-optimizer:
-  target: torch.optim.AdamW
-  params:
-    lr: 1.0e-4
-    weight_decay: 0.01
-    betas: [0.9, 0.999]
+    optimizer_cfg:
+      optimizer:
+        target: torch.optim.AdamW
+        params:
+          betas: [0.9, 0.99]
+          eps: 1.e-6
+          weight_decay: 1.e-3
 
-lr_scheduler:
-  target: hy3dshape.utils.lr_scheduler.LambdaWarmUpCosineFactorScheduler
-  params:
-    warm_up_steps: 1000
-    f_start: 1.0e-6
-    f_max: 1.0
-    f_min: 0.02
-    cycle_lengths: [10000000000000]
-    f_start_cyclic: [1.0e-6]
-    f_max_cyclic: [1.0]
-    f_min_cyclic: [0.02]
+      scheduler:
+        target: hy3dshape.utils.trainings.lr_scheduler.LambdaWarmUpCosineFactorScheduler
+        params:
+          warm_up_steps: 100
+          f_start: 1.e-6
+          f_min: 1.e-5
+          f_max: 1.0
 
-pipeline:
-  target: hy3dshape.pipelines.HunyuanDiTPipeline
-  params:
-    scheduler_type: "flow_euler"
-    num_inference_steps: 30
+    pipeline_cfg:
+      target: hy3dshape.pipelines.Hunyuan3DDiTFlowMatchingPipeline
 
-image_processor:
-  target: hy3dshape.utils.image_processor.ImageProcessor
-  params:
-    mean: *mean
-    std: *std
+    image_processor_cfg:
+      target: hy3dshape.preprocessors.ImageProcessorV2
+      params: {}
 
 callbacks:
   logger:
-    target: hy3dshape.utils.loggers.ImageLogger
+    target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalASLDiffuserLogger
     params:
-      batch_frequency: 2000
-      max_images: 8
-      increase_log_steps: False
-      log_first_step: True
-      log_images_kwargs:
-        use_ema_scope: False
-        N: 8
-        n_rows: 2
-        log_depth: true
-        depth_colormap: 'viridis'
+      step_frequency: 500
+      num_samples: 1
+      sample_times: 1
+      mean: &mean [0.5, 0.5, 0.5]
+      std: &std [0.5, 0.5, 0.5]
+      bounds: [-1.01, -1.01, -1.01, 1.01, 1.01, 1.01]
+      octree_depth: 8
+      num_chunks: 50000
+      mc_level: 0.0
+      log_depth: true
+      depth_mean: &depth_mean [0.5]
+      depth_std: &depth_std [0.5]
+  
+  file_loggers:
+    target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalFixASLDiffuserLogger
+    params:
+      step_frequency: 250
+      test_data_path: "tools/mini_testset/images.json"'
         # 记录自适应alpha值
         log_alpha_values: true
 
