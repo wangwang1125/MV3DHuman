@@ -46,7 +46,7 @@ export TOKENIZERS_PARALLELISM=false
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
 
 # 默认配置
-DEFAULT_CONFIG="configs/hunyuandit-rgbd-depth-guided-fusion.yaml"
+DEFAULT_CONFIG="configs/hunyuandit-rgbd-finetuning-flowmatching-dinol518-bf16-lr1e4-4096.yaml"
 CONFIG_FILE=${1:-$DEFAULT_CONFIG}
 RESUME_PATH=${2:-""}
 BATCH_SIZE=${3:-""}
