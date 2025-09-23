@@ -320,8 +320,6 @@ def _gen_shape(
             if rgb_array.shape[2] == 4:  # RGBA
                 rgb_mask = rgb_array[:, :, 3] / 255.0
         
-        # 处理深度图（与hy3dshape保持一致）
-        # 注意：gradio输入的PNG深度图通常以毫米为单位，需要转换为米
         depth_image_processed, depth_array = process_depth_for_gradio(
             depth_image=depth_image,
             rgb_mask=rgb_mask,
@@ -585,7 +583,6 @@ def build_app():
                                 depth_image = gr.Image(
                                     label='Depth Map (Required for RGBD model)', 
                                     type='pil', 
-                                    image_mode='L',  # Grayscale for depth
                                     height=140
                                 )
                                 # 显示当前模型类型信息

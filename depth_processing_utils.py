@@ -14,7 +14,7 @@ from typing import Tuple, Optional, Union
 
 def detect_depth_unit(depth_array: np.ndarray) -> str:
     """
-    检测深度图的单位，默认PNG深度图为毫米单位
+    检测深度图的单位，支持16位深度图
     
     Args:
         depth_array (np.ndarray): 深度图数组
@@ -177,10 +177,6 @@ def process_depth_for_gradio(depth_image: Image.Image,
         processed_image (PIL.Image): 处理后的深度图（用于显示）
         depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]）
     """
-    # 转换为灰度图
-    if depth_image.mode != "L":
-        depth_image = depth_image.convert("L")
-    
     # 转换为numpy数组
     depth_array = np.array(depth_image, dtype=np.float32)
     
