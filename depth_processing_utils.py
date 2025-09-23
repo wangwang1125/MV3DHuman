@@ -164,6 +164,7 @@ def process_depth_for_gradio(depth_image: str,
         processed_image (PIL.Image): 处理后的深度图（用于显示）
         depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]）
     """
+    print(depth_image)
     depth_array = cv2.imread(depth_image, cv2.IMREAD_UNCHANGED)
     depth_array = depth_array.astype(np.float32)
     print(f"使用cv2读取16位深度图，原始值范围: {depth_array.min():.1f} - {depth_array.max():.1f}")
