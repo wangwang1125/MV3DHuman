@@ -144,15 +144,15 @@ callbacks:
       step_frequency: 500
       num_samples: 1
       sample_times: 1
-      mean: &mean [0.5, 0.5, 0.5]
-      std: &std [0.5, 0.5, 0.5]
+      mean: *mean
+      std: *std
       bounds: [-1.01, -1.01, -1.01, 1.01, 1.01, 1.01]
       octree_depth: 8
       num_chunks: 50000
       mc_level: 0.0
       log_depth: true
-      depth_mean: &depth_mean [0.5]
-      depth_std: &depth_std [0.5]
+      depth_mean: *depth_mean
+      depth_std: *depth_std
   
   file_loggers:
     target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalFixASLDiffuserLogger
