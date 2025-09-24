@@ -147,18 +147,16 @@ def process_depth_for_gradio(depth_image: Union[str, object],
                            rgb_mask: Optional[np.ndarray] = None,
                            depth_clip_range: list = [0.0, 10.0],
                            depth_mean: float = 0.5,
-                           depth_std: float = 0.5,
-                           input_unit: str = 'auto') -> Tuple[Image.Image, np.ndarray]:
+                           depth_std: float = 0.5) -> Tuple[Image.Image, np.ndarray]:
     """
     为gradio_app.py处理深度图的统一接口，与hy3dshape训练时的处理保持一致
     
     Args:
         depth_image (str or file object): 输入深度图文件路径或gradio文件对象
         rgb_mask (np.ndarray, optional): RGB掩码
-        depth_clip_range (list): 深度值裁剪范围（单位：米）
+        depth_clip_range (list): 深度值裁剪范围（与训练时保持一致）
         depth_mean (float): 标准化均值
         depth_std (float): 标准化标准差
-        input_unit (str): 输入深度图的单位，'auto'自动检测、'normalized'已归一化、'mm'毫米、'm'米
     
     Returns:
         processed_image (PIL.Image): 处理后的深度图（用于显示）
@@ -176,22 +174,27 @@ def process_depth_for_gradio(depth_image: Union[str, object],
     else:
         raise ValueError(f"不支持的深度图输入类型: {type(depth_image)}")
     
-    # 使用PIL Image读取，保持16位精度
+    # 使用cv2读取深度图，与训练时保持一致
     try:
-        depth_image_pil = Image.open(depth_path)
-        depth_array = np.array(depth_image_pil, dtype=np.float32)
-        print(f"使用PIL Image读取16位深度图，原始值范围: {depth_array.min():.1f} - {depth_array.max():.1f}")
-        print(f"图像模式: {depth_image_pil.mode}, 数据类型: {depth_array.dtype}")
+        # 使用cv2.IMREAD_ANYDEPTH保持原始位深度，与训练时一致
+        depth_array = cv2.imread(depth_path, cv2.IMREAD_ANYDEPTH)
+        if depth_array is None:
+            raise ValueError(f"无法读取深度图文件: {depth_path}")
+        
+        # 转换为float32
+        depth_array = depth_array.astype(np.float32)
+        print(f"使用cv2读取深度图，原始值范围: {depth_array.min():.1f} - {depth_array.max():.1f}")
+        
+        # 确保是单通道
+        if len(depth_array.shape) == 3:
+            depth_array = depth_array[:, :, 0]
+            
     except Exception as e:
         raise ValueError(f"无法读取深度图文件: {depth_path}, 错误: {e}")
     
-
-
-    # PNG深度图通常以毫米为单位，需要转换为米
-    original_range = f"{depth_array.min():.1f}mm - {depth_array.max():.1f}mm"
-    depth_array = depth_array / 1000.0  # mm -> m
-    converted_range = f"{depth_array.min():.3f}m - {depth_array.max():.3f}m"
-    print(f"深度图单位转换: {original_range} -> {converted_range}")
+    # 注意：不进行单位转换，与训练时保持一致
+    # 训练时直接使用原始深度值，推理时也应该保持一致
+    print(f"深度图值范围（与训练时一致）: {depth_array.min():.1f} - {depth_array.max():.1f}")
     
     # 裁剪到合理范围并归一化到[0,1]
     depth_array = np.clip(depth_array, depth_clip_range[0], depth_clip_range[1])

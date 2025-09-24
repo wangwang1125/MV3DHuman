@@ -325,8 +325,8 @@ def _gen_shape(
             rgb_mask=rgb_mask,
             depth_clip_range=[0.0, 10.0],
             depth_mean=0.5,
-            depth_std=0.5,
-            input_unit='mm'  # 明确指定PNG深度图单位为毫米
+            depth_std=0.5
+            # 注意：不指定input_unit，与训练时保持一致，直接使用原始深度值
         )
         
         # 验证处理结果
