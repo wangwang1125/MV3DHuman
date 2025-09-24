@@ -57,6 +57,14 @@ class Diffuser(pl.LightningModule):
         self.denoiser_cfg = denoiser_cfg
         self.model = instantiate_from_config(denoiser_cfg, device=None, dtype=None)
         self.cond_stage_model = instantiate_from_config(cond_stage_config)
+        
+        # ========= print LoRA parameter statistics if using DynamicLoRAImageEncoder ========= #
+        if hasattr(self.cond_stage_model, 'print_lora_parameter_summary'):
+            print("\n" + "="*80)
+            print("LORA PARAMETER STATISTICS")
+            print("="*80)
+            self.cond_stage_model.print_lora_parameter_summary()
+            print("="*80 + "\n")
 
         self.ckpt_path = ckpt_path
         if ckpt_path is not None:

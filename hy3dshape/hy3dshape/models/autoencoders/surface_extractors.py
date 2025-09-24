@@ -116,9 +116,29 @@ class MCSurfaceExtractor(SurfaceExtractor):
                   box coordinates.
                 - faces (np.ndarray): Extracted mesh faces (triangles).
         """
-        vertices, faces, normals, _ = measure.marching_cubes(grid_logit.cpu().numpy(),
-                                                             mc_level,
-                                                             method="lewiner")
+        # 添加调试日志
+        grid_numpy = grid_logit.cpu().numpy()
+        print(f"[DEBUG] Grid logit shape: {grid_numpy.shape}")
+        print(f"[DEBUG] Grid logit data range: [{grid_numpy.min():.6f}, {grid_numpy.max():.6f}]")
+        print(f"[DEBUG] Grid logit mean: {grid_numpy.mean():.6f}, std: {grid_numpy.std():.6f}")
+        print(f"[DEBUG] MC level (iso-value): {mc_level}")
+        print(f"[DEBUG] Is mc_level within data range? {grid_numpy.min() <= mc_level <= grid_numpy.max()}")
+        
+        # 检查是否有有效的数据
+        finite_mask = np.isfinite(grid_numpy)
+        print(f"[DEBUG] Finite values: {finite_mask.sum()}/{grid_numpy.size} ({100*finite_mask.sum()/grid_numpy.size:.1f}%)")
+        
+        if not np.any(finite_mask):
+            raise ValueError("Grid contains no finite values!")
+        
+        if grid_numpy.min() > mc_level or grid_numpy.max() < mc_level:
+            print(f"[ERROR] MC level {mc_level} is outside data range [{grid_numpy.min():.6f}, {grid_numpy.max():.6f}]")
+            # 尝试使用数据范围内的合适值
+            suggested_level = (grid_numpy.min() + grid_numpy.max()) / 2
+            print(f"[DEBUG] Suggested mc_level: {suggested_level:.6f}")
+            raise ValueError(f"Surface level {mc_level} must be within volume data range [{grid_numpy.min():.6f}, {grid_numpy.max():.6f}]")
+        
+        vertices, faces, normals, _ = measure.marching_cubes(grid_numpy,mc_level,method="lewiner")
         grid_size, bbox_min, bbox_size = self._compute_box_stat(bounds, octree_resolution)
         vertices = vertices / grid_size * bbox_size + bbox_min
         return vertices, faces

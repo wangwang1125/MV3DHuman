@@ -99,15 +99,36 @@ class RGBDFineTuningTrainer:
         # 确保深度编码器和融合模块可训练
         if hasattr(model, 'cond_stage_model'):
             cond_model = model.cond_stage_model
+            
+            # 处理传统的RGBDImageEncoder
             if hasattr(cond_model, 'depth_encoder'):
                 for param in cond_model.depth_encoder.parameters():
                     param.requires_grad = True
                 print("✓ 深度编码器参数设为可训练")
             
-            if hasattr(cond_model, 'fusion_module'):
+            if hasattr(cond_model, 'fusion_module') and cond_model.fusion_module is not None:
                 for param in cond_model.fusion_module.parameters():
                     param.requires_grad = True
                 print("✓ 跨模态融合模块参数设为可训练")
+            
+            # 处理新的DynamicLoRAImageEncoder
+            if hasattr(cond_model, 'depth_feature_extractor'):
+                for param in cond_model.depth_feature_extractor.parameters():
+                    param.requires_grad = True
+                print("✓ 深度特征提取器参数设为可训练")
+            
+            if hasattr(cond_model, 'dino_lora_model'):
+                # 设置LoRA参数为可训练
+                lora_params = cond_model.dino_lora_model.get_lora_parameters()
+                for param in lora_params:
+                    param.requires_grad = True
+                print(f"✓ 动态LoRA参数设为可训练 ({len(lora_params)} 个参数)")
+            
+            # 如果有额外的融合模块
+            if hasattr(cond_model, 'fusion_module') and cond_model.fusion_module is not None:
+                for param in cond_model.fusion_module.parameters():
+                    param.requires_grad = True
+                print("✓ 额外融合模块参数设为可训练")
     
     def print_parameter_stats(self, model):
         """
@@ -125,11 +146,32 @@ class RGBDFineTuningTrainer:
         # 详细统计各模块参数
         if hasattr(model, 'cond_stage_model'):
             cond_model = model.cond_stage_model
+            
+            # 传统深度编码器
             if hasattr(cond_model, 'depth_encoder'):
                 depth_params = sum(p.numel() for p in cond_model.depth_encoder.parameters())
                 print(f"  深度编码器参数: {depth_params:,}")
             
-            if hasattr(cond_model, 'fusion_module'):
+            # 新的深度特征提取器
+            if hasattr(cond_model, 'depth_feature_extractor'):
+                depth_extractor_params = sum(p.numel() for p in cond_model.depth_feature_extractor.parameters())
+                print(f"  深度特征提取器参数: {depth_extractor_params:,}")
+            
+            # 动态LoRA参数
+            if hasattr(cond_model, 'dino_lora_model'):
+                lora_params = cond_model.dino_lora_model.get_lora_parameters()
+                lora_param_count = sum(p.numel() for p in lora_params)
+                print(f"  动态LoRA参数: {lora_param_count:,}")
+                
+                # 统计各层的LoRA参数
+                if hasattr(cond_model.dino_lora_model, 'lora_layers'):
+                    num_lora_layers = len(cond_model.dino_lora_model.lora_layers)
+                    print(f"    LoRA层数: {num_lora_layers}")
+                    if hasattr(cond_model.dino_lora_model, 'lora_rank'):
+                        print(f"    LoRA秩: {cond_model.dino_lora_model.lora_rank}")
+            
+            # 融合模块
+            if hasattr(cond_model, 'fusion_module') and cond_model.fusion_module is not None:
                 fusion_params = sum(p.numel() for p in cond_model.fusion_module.parameters())
                 print(f"  融合模块参数: {fusion_params:,}")
         

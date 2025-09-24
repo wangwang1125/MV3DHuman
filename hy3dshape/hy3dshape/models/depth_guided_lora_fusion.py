@@ -54,7 +54,7 @@ class DepthGuidedLoRAFusion(nn.Module):
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.num_guidance_layers = num_guidance_layers
-        self.scaling = lora_alpha / lora_rank
+        self.scaling = lora_alpha / lora_rank * 0.0001
         
         # 输入投影层
         self.rgb_proj = nn.Linear(rgb_dim, hidden_dim, bias=use_bias)
