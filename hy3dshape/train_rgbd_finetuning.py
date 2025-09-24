@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-RGBD微调训练脚本
-基于Hunyuan3D-2.1架构，采用预训练模型复用策略
-固定预训练参数，仅训练深度编码器和跨模态融合模块
+RGBD条件化LoRA微调训练脚本
+使用深度图条件向量动态调制LoRA权重，同时保持彩色图主干网络不变
 
 使用方法:
-python train_rgbd_finetuning.py --config configs/hunyuandit-rgbd-finetuning-flowmatching-dinol518-bf16-lr1e4-4096.yaml
+python train_rgbd_finetuning.py --config configs/hunyuandit-rgbd-conditional-lora-dinol518-bf16-lr1e5.yaml
 """
 
 import os
