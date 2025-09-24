@@ -28,16 +28,17 @@ from .dit_asl import (
 )
 
 
-def load_depth_image(depth_path, depth_clip_range=[0.0, 10.0]):
+def load_depth_image(depth_path, depth_clip_range=[0.0, 10.0], invalid_depth_value=-2.0):
     """
-    加载深度图像
+    加载深度图像，正确处理空值以避免影响归一化
     
     Args:
         depth_path (str): 深度图路径
         depth_clip_range (list): 深度值裁剪范围 [min, max]
+        invalid_depth_value (float): 用于标记无效深度的特殊值
     
     Returns:
-        depth (np.ndarray): 归一化的深度图 (H, W, 1)
+        depth (np.ndarray): 归一化的深度图 (H, W, 1)，无效区域用invalid_depth_value标记
     """
     if depth_path.endswith('.npy'):
         depth = np.load(depth_path)
@@ -69,43 +70,67 @@ def load_depth_image(depth_path, depth_clip_range=[0.0, 10.0]):
     if len(depth.shape) == 3:
         depth = depth[:, :, 0]
     
-    # 裁剪深度值
-    depth = np.clip(depth, depth_clip_range[0], depth_clip_range[1])
+    # 处理无效值：NaN, inf, 以及原本的0值（通常表示无效深度）
+    # 创建有效深度掩码
+    valid_mask = np.isfinite(depth) & (depth > 0) & (depth <= depth_clip_range[1])
     
-    # 归一化到 [0, 1]
-    depth_min, depth_max = depth_clip_range
-    depth = (depth - depth_min) / (depth_max - depth_min)
+    # 检查有效深度比例
+    valid_ratio = np.sum(valid_mask) / depth.size
+    
+    # 只对有效深度值进行裁剪
+    depth_processed = depth.copy()
+    depth_processed[~valid_mask] = invalid_depth_value  # 先标记无效区域
+    
+    # 对有效区域进行裁剪
+    valid_depth = depth[valid_mask]
+    if len(valid_depth) > 0:
+        # 裁剪有效深度值
+        valid_depth_clipped = np.clip(valid_depth, depth_clip_range[0], depth_clip_range[1])
+        
+        # 只对有效深度进行归一化
+        depth_min, depth_max = depth_clip_range
+        valid_depth_normalized = (valid_depth_clipped - depth_min) / (depth_max - depth_min)
+        
+        # 将归一化后的有效深度放回原位置
+        depth_processed[valid_mask] = valid_depth_normalized
+    else:
+        print(f"警告: 深度图 {depth_path} 没有有效深度值")
     
     # 添加通道维度
-    depth = depth[:, :, np.newaxis]
+    depth_processed = depth_processed[:, :, np.newaxis]
     
-    return depth.astype(np.float32)
+    return depth_processed.astype(np.float32)
 
 
-def depth_augmentation(depth, noise_std=0.01, dropout_prob=0.1):
+def depth_augmentation(depth, noise_std=0.01, dropout_prob=0.1, invalid_depth_value=-2.0):
     """
-    深度图数据增强
+    深度图数据增强，正确处理无效深度值
     
     Args:
         depth (np.ndarray): 输入深度图 (H, W, 1)
         noise_std (float): 高斯噪声标准差
         dropout_prob (float): 随机置零概率
+        invalid_depth_value (float): 无效深度标记值
     
     Returns:
         depth (np.ndarray): 增强后的深度图
     """
     depth = depth.copy()
     
+    # 创建有效深度掩码（排除无效深度值）
+    valid_mask = depth != invalid_depth_value
+    
     # 添加高斯噪声
-    if noise_std > 0:
+    if noise_std > 0 and np.any(valid_mask):
         noise = np.random.normal(0, noise_std, depth.shape)
-        depth = depth + noise
-        depth = np.clip(depth, 0, 1)
+        # 只对有效深度添加噪声
+        depth[valid_mask] = depth[valid_mask] + noise[valid_mask]
+        depth[valid_mask] = np.clip(depth[valid_mask], 0, 1)
     
     # 随机dropout
-    if dropout_prob > 0:
-        dropout_mask = np.random.random(depth.shape[:2]) > dropout_prob
-        depth = depth * dropout_mask[:, :, np.newaxis]
+    if dropout_prob > 0 and np.any(valid_mask):
+        dropout_mask = (np.random.random(depth.shape[:2]) < dropout_prob) & valid_mask[:, :, 0]
+        depth[dropout_mask, :] = invalid_depth_value  # 丢弃的像素标记为无效
     
     return depth
 
@@ -135,6 +160,7 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         depth_normalize=True,
         depth_augmentation_config=None,
         require_depth=True,  # 是否必须有深度图
+        invalid_depth_value=-2.0,  # 无效深度标记值
         # 深度图归一化参数
         depth_mean=0.5,
         depth_std=0.5,
@@ -159,6 +185,7 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
         self.depth_clip_range = depth_clip_range
         self.depth_normalize = depth_normalize
         self.require_depth = require_depth
+        self.invalid_depth_value = invalid_depth_value
         self.depth_mean = depth_mean
         self.depth_std = depth_std
         self.image_size = image_size
@@ -180,14 +207,15 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
             depth (np.ndarray): 处理后的深度图
         """
         try:
-            depth = load_depth_image(depth_path, self.depth_clip_range)
+            depth = load_depth_image(depth_path, self.depth_clip_range, self.invalid_depth_value)
             
             # 数据增强
             if self.depth_aug_config:
                 depth = depth_augmentation(
                     depth,
                     noise_std=self.depth_aug_config.get('noise_std', 0.01),
-                    dropout_prob=self.depth_aug_config.get('dropout_prob', 0.1)
+                    dropout_prob=self.depth_aug_config.get('dropout_prob', 0.1),
+                    invalid_depth_value=self.invalid_depth_value
                 )
             
             return depth
@@ -309,7 +337,14 @@ class RGBDAlignedShapeLatentDataset(AlignedShapeLatentDataset):
             else:
                 depth_std = float(depth_std)
             
-            depth = (depth - depth_mean) / depth_std
+            # 创建有效深度掩码，排除无效深度值
+            invalid_depth_value = getattr(self, 'invalid_depth_value', -2.0)
+            valid_mask = depth != invalid_depth_value
+            
+            # 只对有效深度值进行归一化
+            depth_normalized = depth.clone()
+            depth_normalized[valid_mask] = (depth[valid_mask] - depth_mean) / depth_std
+            depth = depth_normalized
         
         # 处理点云数据（调用父类方法）
         rng = np.random.default_rng()
@@ -359,6 +394,7 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
         depth_normalize=True,
         depth_augmentation=None,
         require_depth=True,
+        invalid_depth_value=-2.0,  # 无效深度标记值
     ):
         super().__init__()
         
@@ -384,6 +420,7 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
         self.depth_normalize = depth_normalize
         self.depth_augmentation = depth_augmentation
         self.require_depth = require_depth
+        self.invalid_depth_value = invalid_depth_value
         
         # 图像变换（与父类保持一致）
         self.image_transform = transforms.Compose([
@@ -412,6 +449,7 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
             depth_normalize=self.depth_normalize,
             depth_augmentation_config=self.depth_augmentation,
             require_depth=self.require_depth,
+            invalid_depth_value=self.invalid_depth_value,
             depth_mean=self.depth_mean[0] if isinstance(self.depth_mean, (list, tuple)) else self.depth_mean,
             depth_std=self.depth_std[0] if isinstance(self.depth_std, (list, tuple)) else self.depth_std,
             image_size=self.image_size,
@@ -443,6 +481,7 @@ class RGBDAlignedShapeLatentModule(LightningDataModule):
             depth_augmentation_config=None,  # 验证时不使用数据增强
             require_depth=self.require_depth,
             deterministic=True,  # 验证时使用确定性采样
+            invalid_depth_value=self.invalid_depth_value,
             depth_mean=self.depth_mean[0] if isinstance(self.depth_mean, (list, tuple)) else self.depth_mean,
             depth_std=self.depth_std[0] if isinstance(self.depth_std, (list, tuple)) else self.depth_std,
             image_size=self.image_size,

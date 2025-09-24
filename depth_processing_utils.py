@@ -147,7 +147,8 @@ def process_depth_for_gradio(depth_image: Union[str, object],
                            rgb_mask: Optional[np.ndarray] = None,
                            depth_clip_range: list = [0.0, 10.0],
                            depth_mean: float = 0.5,
-                           depth_std: float = 0.5) -> Tuple[Image.Image, np.ndarray]:
+                           depth_std: float = 0.5,
+                           invalid_depth_value: float = -2.0) -> Tuple[Image.Image, np.ndarray]:
     """
     为gradio_app.py处理深度图的统一接口，与hy3dshape训练时的处理保持一致
     
@@ -157,10 +158,11 @@ def process_depth_for_gradio(depth_image: Union[str, object],
         depth_clip_range (list): 深度值裁剪范围（与训练时保持一致）
         depth_mean (float): 标准化均值
         depth_std (float): 标准化标准差
+        invalid_depth_value (float): 无效深度值标识，与训练时保持一致
     
     Returns:
         processed_image (PIL.Image): 处理后的深度图（用于显示）
-        depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]）
+        depth_array (np.ndarray): 标准化后的深度数组（用于模型，范围[-1,1]，无效区域为-2.0）
     """
     # 处理gradio文件对象
     if hasattr(depth_image, 'name'):
@@ -192,60 +194,103 @@ def process_depth_for_gradio(depth_image: Union[str, object],
     except Exception as e:
         raise ValueError(f"无法读取深度图文件: {depth_path}, 错误: {e}")
     
-    # 注意：不进行单位转换，与训练时保持一致
-    # 训练时直接使用原始深度值，推理时也应该保持一致
+    depth_array = depth_array / 1000.0
     print(f"深度图值范围（与训练时一致）: {depth_array.min():.1f} - {depth_array.max():.1f}")
     
-    # 裁剪到合理范围并归一化到[0,1]
-    depth_array = np.clip(depth_array, depth_clip_range[0], depth_clip_range[1])
-    depth_min, depth_max = depth_clip_range
-    if depth_max > depth_min:
-        depth_array = (depth_array - depth_min) / (depth_max - depth_min)
-
+    # === 与训练时一致的无效值处理 ===
+    # 1. 创建有效深度掩码（与rgbd_dit_asl.py中的load_depth_image一致）
+    valid_mask = np.isfinite(depth_array) & (depth_array > 0) & (depth_array <= depth_clip_range[1])
     
-    # 应用RGB掩码（如果提供）
+    # 2. 处理深度图，标记无效区域
+    depth_processed = depth_array.copy()
+    depth_processed[~valid_mask] = invalid_depth_value  # 标记无效区域为-2.0
+    
+    # 3. 对有效区域进行第一次归一化到[0,1]
+    valid_depth = depth_array[valid_mask]
+    if len(valid_depth) > 0:
+        # 裁剪有效深度值
+        valid_depth_clipped = np.clip(valid_depth, depth_clip_range[0], depth_clip_range[1])
+        depth_min, depth_max = depth_clip_range
+        if depth_max > depth_min:
+            valid_depth_normalized = (valid_depth_clipped - depth_min) / (depth_max - depth_min)
+            depth_processed[valid_mask] = valid_depth_normalized
+    
+    # 4. 应用RGB掩码（如果提供）
     if rgb_mask is not None:
-        depth_array = apply_rgb_mask_to_depth(depth_array, rgb_mask)
+        # 将RGB掩码为0的区域也标记为无效
+        rgb_invalid_mask = rgb_mask < 0.5  # 假设掩码值小于0.5为无效
+        depth_processed[rgb_invalid_mask] = invalid_depth_value
+        # 更新有效掩码
+        valid_mask = valid_mask & (~rgb_invalid_mask)
     
-    # 标准化到[-1,1]范围（与训练时一致）
-    # 训练时使用: (depth - 0.5) / 0.5，将[0,1]映射到[-1,1]
-    depth_normalized = (depth_array - depth_mean) / depth_std
+    # 5. 对有效区域进行第二次归一化到[-1,1]（与训练时一致）
+    depth_final = depth_processed.copy()
+    final_valid_mask = depth_processed != invalid_depth_value
+    if np.any(final_valid_mask):
+        depth_final[final_valid_mask] = (depth_processed[final_valid_mask] - depth_mean) / depth_std
     
-    print(f"最终深度值范围: [{depth_normalized.min():.3f}, {depth_normalized.max():.3f}]")
+    print(f"有效像素数量: {np.sum(final_valid_mask)}")
+    print(f"无效像素数量: {np.sum(~final_valid_mask)}")
+    if np.any(final_valid_mask):
+        valid_values = depth_final[final_valid_mask]
+        print(f"有效深度值范围: [{valid_values.min():.3f}, {valid_values.max():.3f}]")
+    print(f"无效深度值: {invalid_depth_value}")
     
-    # 转换回PIL图像（用于显示，将[-1,1]映射回[0,255]）
-    depth_display = ((depth_normalized * depth_std + depth_mean) * 255).astype(np.uint8)
-    depth_display = np.clip(depth_display, 0, 255)
+    # 转换回PIL图像（用于显示）
+    # 只显示有效区域，无效区域显示为黑色
+    depth_display = np.zeros_like(depth_final, dtype=np.uint8)
+    if np.any(final_valid_mask):
+        # 将有效区域的[-1,1]值映射回[0,255]用于显示
+        valid_display = ((depth_final[final_valid_mask] * depth_std + depth_mean) * 255)
+        valid_display = np.clip(valid_display, 0, 255).astype(np.uint8)
+        depth_display[final_valid_mask] = valid_display
+    
     processed_image = Image.fromarray(depth_display, mode='L')
     
-    return processed_image, depth_normalized
+    return processed_image, depth_final
 
 
 def validate_depth_processing(depth_array: np.ndarray, 
-                             expected_range: Tuple[float, float] = (-1.0, 1.0)) -> bool:
+                             expected_range: Tuple[float, float] = (-1.0, 1.0),
+                             invalid_depth_value: float = -2.0) -> bool:
     """
-    验证深度图处理是否正确
+    验证深度图处理结果是否符合预期
     
     Args:
         depth_array (np.ndarray): 处理后的深度数组
-        expected_range (tuple): 期望的值域范围
+        expected_range (tuple): 期望的有效值范围
+        invalid_depth_value (float): 无效深度值标识
     
     Returns:
-        is_valid (bool): 是否有效
+        bool: 验证是否通过
     """
-    min_val, max_val = expected_range
-    actual_min, actual_max = depth_array.min(), depth_array.max()
+    # 分离有效值和无效值
+    valid_mask = depth_array != invalid_depth_value
+    invalid_mask = depth_array == invalid_depth_value
     
-    # 检查值域是否在期望范围内（允许小的误差）
-    tolerance = 0.1
-    is_valid = (actual_min >= min_val - tolerance and 
-                actual_max <= max_val + tolerance)
+    # 检查是否有NaN或无穷值
+    if not np.isfinite(depth_array).all():
+        print("Warning: Depth array contains NaN or infinite values")
+        return False
     
-    if not is_valid:
-        print(f"Warning: Depth values out of expected range. "
-              f"Expected: {expected_range}, Actual: ({actual_min:.3f}, {actual_max:.3f})")
+    # 检查无效值是否正确
+    if np.any(invalid_mask):
+        invalid_values = depth_array[invalid_mask]
+        if not np.all(invalid_values == invalid_depth_value):
+            print(f"Warning: Invalid depth values are not consistent. Expected: {invalid_depth_value}")
+            return False
     
-    return is_valid
+    # 检查有效值范围
+    if np.any(valid_mask):
+        valid_values = depth_array[valid_mask]
+        min_val, max_val = valid_values.min(), valid_values.max()
+        expected_min, expected_max = expected_range
+        
+        if min_val < expected_min or max_val > expected_max:
+            print(f"Warning: Valid depth values out of expected range. Expected: {expected_range}, Actual: ({min_val:.3f}, {max_val:.3f})")
+            return False
+    
+    return True
 
 
 if __name__ == "__main__":

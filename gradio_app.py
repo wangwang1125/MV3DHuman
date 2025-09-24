@@ -325,7 +325,8 @@ def _gen_shape(
             rgb_mask=rgb_mask,
             depth_clip_range=[0.0, 10.0],
             depth_mean=0.5,
-            depth_std=0.5
+            depth_std=0.5,
+            invalid_depth_value=-2.0  # 与训练时保持一致，使用-2.0标识无效深度值
             # 注意：不指定input_unit，与训练时保持一致，直接使用原始深度值
         )
         
@@ -849,7 +850,7 @@ if __name__ == '__main__':
     parser.add_argument("--rgbd_model_path", type=str, default='./hy3dshape/checkpoints/rgbd_finetuning', help='Path to RGBD model checkpoints directory')
     parser.add_argument('--model_type', type=str, choices=['rgb', 'rgbd'], default='rgbd', 
                        help='Choose which model to load: "rgb" for standard RGB model, "rgbd" for depth-aware RGBD model. Only the selected model will be loaded to save memory.')
-    parser.add_argument('--port', type=int, default=8080)
+    parser.add_argument('--port', type=int, default=6008)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--mc_algo', type=str, default='mc')
