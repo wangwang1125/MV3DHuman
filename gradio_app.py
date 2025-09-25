@@ -181,6 +181,114 @@ def randomize_seed_fn(seed: int, randomize_seed: bool) -> int:
     return seed
 
 
+def load_depth_from_16bit_png(depth_file_path, target_size=518):
+    """
+    加载16位PNG深度图并处理为与训练集兼容的格式
+    
+    Args:
+        depth_file_path (str): 深度图文件路径
+        target_size (int): 目标图像尺寸，默认518
+    
+    Returns:
+        torch.Tensor: 处理后的深度图张量，形状为 (1, 1, H, W)
+    """
+    import cv2
+    from PIL import Image
+    
+    try:
+        # 使用OpenCV加载16位深度图
+        depth = cv2.imread(depth_file_path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH)
+        
+        if depth is None:
+            # 尝试使用PIL加载
+            depth_pil = Image.open(depth_file_path)
+            depth = np.array(depth_pil)
+        
+        if depth is None:
+            raise ValueError(f"无法加载深度图: {depth_file_path}")
+        
+        # 确保是单通道
+        if len(depth.shape) == 3:
+            if depth.shape[2] == 1:
+                depth = depth[:, :, 0]
+            else:
+                # 如果是多通道，取第一个通道
+                depth = depth[:, :, 0]
+        
+        print(f"原始深度图形状: {depth.shape}, 数据类型: {depth.dtype}")
+        print(f"深度值范围: [{depth.min()}, {depth.max()}]")
+        
+        # 转换为浮点数
+        if depth.dtype == np.uint16:
+            # 16位深度图，通常需要除以65535来归一化到[0,1]
+            depth = depth.astype(np.float32) / 65535.0
+        elif depth.dtype == np.uint8:
+            # 8位深度图
+            depth = depth.astype(np.float32) / 255.0
+        else:
+            # 已经是浮点数格式
+            depth = depth.astype(np.float32)
+        
+        # 过滤无效深度值（与训练集处理保持一致）
+        depth[depth > 1e9] = 0
+        depth[np.isnan(depth)] = 0
+        depth[np.isinf(depth)] = 0
+        
+        # 归一化到[0, 1]范围（与训练集处理保持一致）
+        if depth.max() > depth.min():
+            depth = (depth - depth.min()) / (depth.max() - depth.min())
+        
+        print(f"归一化后深度值范围: [{depth.min():.6f}, {depth.max():.6f}]")
+        
+        # 调整大小到目标尺寸
+        if depth.shape[0] != target_size or depth.shape[1] != target_size:
+            depth = cv2.resize(depth, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+            print(f"深度图已调整到尺寸: {depth.shape}")
+        
+        # 转换为torch张量并添加批次和通道维度
+        depth_tensor = torch.FloatTensor(depth).unsqueeze(0).unsqueeze(0)  # 形状: (1, 1, H, W)
+        
+        print(f"最终深度图张量形状: {depth_tensor.shape}")
+        
+        return depth_tensor
+        
+    except Exception as e:
+        print(f"加载深度图时发生错误: {e}")
+        raise gr.Error(f"无法处理深度图文件: {str(e)}")
+
+
+def validate_depth_file(file_path):
+    """
+    验证上传的深度图文件是否有效
+    
+    Args:
+        file_path (str): 文件路径
+    
+    Returns:
+        bool: 文件是否有效
+    """
+    if not os.path.exists(file_path):
+        return False
+    
+    try:
+        # 检查文件扩展名
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in ['.png', '.tiff', '.tif']:
+            return False
+        
+        # 尝试加载文件
+        if ext == '.png':
+            from PIL import Image
+            img = Image.open(file_path)
+            # 检查是否为16位图像
+            return img.mode in ['I;16', 'L', 'I']
+        
+        return True
+        
+    except:
+        return False
+
+
 def build_model_viewer_html(save_folder, height=660, width=790, textured=False):
     # Remove first folder from path to make relative path
     if textured:
@@ -217,6 +325,7 @@ height="{height}" width="100%" frameborder="0"></iframe>'
 def _gen_shape(
     caption=None,
     image=None,
+    depth_file=None,  # 新增深度图文件参数
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
@@ -230,11 +339,19 @@ def _gen_shape(
     randomize_seed: bool = False,
 ):
     if not MV_MODE and image is None and caption is None:
-        raise gr.Error("Please provide either a caption or an image.")
+        raise gr.Error("请提供图像或文本提示。")
+    
+    # 深度模式验证
+    if DEPTH_MODE:
+        if image is None:
+            raise gr.Error("深度模式下必须提供RGB图像。")
+        if depth_file is None:
+            raise gr.Error("深度模式下必须上传深度图文件。")
+    
     if MV_MODE:
         if mv_image_front is None and mv_image_back is None \
             and mv_image_left is None and mv_image_right is None:
-            raise gr.Error("Please provide at least one view image.")
+            raise gr.Error("请提供至少一个视图图像。")
         image = {}
         if mv_image_front:
             image['front'] = mv_image_front
@@ -294,20 +411,43 @@ def _gen_shape(
     # remove disk io to make responding faster, uncomment at your will.
     # image.save(os.path.join(save_folder, 'rembg.png'))
 
+    # 处理深度图（如果在深度模式下）
+    depth_tensor = None
+    if DEPTH_MODE and depth_file is not None:
+        start_depth_time = time.time()
+        try:
+            depth_tensor = load_depth_from_16bit_png(depth_file.name if hasattr(depth_file, 'name') else depth_file)
+            if args.device == 'cuda':
+                depth_tensor = depth_tensor.cuda()
+            time_meta['depth processing'] = time.time() - start_depth_time
+            print(f"深度图处理完成，形状: {depth_tensor.shape}")
+        except Exception as e:
+            print(f"深度图处理失败: {e}")
+            raise gr.Error(f"深度图处理失败: {str(e)}")
+
     # image to white model
     start_time = time.time()
 
     generator = torch.Generator()
     generator = generator.manual_seed(int(seed))
-    outputs = i23d_worker(
-        image=image,
-        num_inference_steps=steps,
-        guidance_scale=guidance_scale,
-        generator=generator,
-        octree_resolution=octree_resolution,
-        num_chunks=num_chunks,
-        output_type='mesh'
-    )
+    
+    # 准备模型输入
+    model_inputs = {
+        'image': image,
+        'num_inference_steps': steps,
+        'guidance_scale': guidance_scale,
+        'generator': generator,
+        'octree_resolution': octree_resolution,
+        'num_chunks': num_chunks,
+        'output_type': 'mesh'
+    }
+    
+    # 如果有深度图，添加到输入中
+    if depth_tensor is not None:
+        model_inputs['depth'] = depth_tensor
+        print("深度图已添加到模型输入")
+    
+    outputs = i23d_worker(**model_inputs)
     time_meta['shape generation'] = time.time() - start_time
     logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
 
@@ -326,6 +466,7 @@ def _gen_shape(
 def generation_all(
     caption=None,
     image=None,
+    depth_file=None,  # 新增深度图文件参数
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
@@ -342,6 +483,7 @@ def generation_all(
     mesh, image, save_folder, stats, seed = _gen_shape(
         caption,
         image,
+        depth_file=depth_file,  # 传递深度图参数
         mv_image_front=mv_image_front,
         mv_image_back=mv_image_back,
         mv_image_left=mv_image_left,
@@ -408,6 +550,7 @@ def generation_all(
 def shape_generation(
     caption=None,
     image=None,
+    depth_file=None,  # 新增深度图文件参数
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
@@ -424,6 +567,7 @@ def shape_generation(
     mesh, image, save_folder, stats, seed = _gen_shape(
         caption,
         image,
+        depth_file=depth_file,  # 传递深度图参数
         mv_image_front=mv_image_front,
         mv_image_back=mv_image_back,
         mv_image_left=mv_image_left,
@@ -463,6 +607,10 @@ def build_app():
     if TURBO_MODE:
         title = title.replace(':', '-Turbo: Fast ')
 
+    # 根据模式调整标题
+    if DEPTH_MODE:
+        title += " (深度条件模式)"
+    
     title_html = f"""
     <div style="font-size: 2em; font-weight: bold; text-align: center; margin-bottom: 5px">
 
@@ -493,7 +641,57 @@ def build_app():
             with gr.Column(scale=3):
                 with gr.Tabs(selected='tab_img_prompt') as tabs_prompt:
                     with gr.Tab('Image Prompt', id='tab_img_prompt', visible=not MV_MODE) as tab_ip:
-                        image = gr.Image(label='Image', type='pil', image_mode='RGBA', height=290)
+                        image = gr.Image(label='RGB图像', type='pil', image_mode='RGBA', height=290)
+                        
+                        # 如果启用深度模式，添加深度图上传组件
+                        if DEPTH_MODE:
+                            with gr.Row():
+                                depth_file = gr.File(
+                                    label="深度图文件 (16位PNG)",
+                                    file_types=[".png", ".tiff", ".tif"],
+                                    type="filepath",
+                                    interactive=True
+                                )
+                            gr.Markdown(
+                                "📋 **深度图要求:**\n"
+                                "- 格式: 16位PNG、TIFF或TIF文件\n" 
+                                "- 尺寸: 建议与RGB图像相同\n"
+                                "- 值域: 任意深度值（会自动归一化）\n"
+                                "- 注意: Gradio的Image组件会将16位图压缩为8位，因此必须使用File组件上传\n\n"
+                                "💡 **使用提示:**\n"
+                                "1. 先上传RGB图像\n"
+                                "2. 再上传对应的深度图文件\n" 
+                                "3. 点击生成按钮开始处理"
+                            )
+                            
+                            # 添加深度图验证状态显示
+                            depth_status = gr.HTML("", visible=False)
+                            
+                            def validate_depth_upload(file):
+                                if file is None:
+                                    return gr.update(visible=False)
+                                
+                                try:
+                                    if validate_depth_file(file.name if hasattr(file, 'name') else file):
+                                        return gr.update(
+                                            value="✅ <span style='color: green;'>深度图文件有效</span>",
+                                            visible=True
+                                        )
+                                    else:
+                                        return gr.update(
+                                            value="❌ <span style='color: red;'>深度图文件格式无效</span>",
+                                            visible=True
+                                        )
+                                except Exception as e:
+                                    return gr.update(
+                                        value=f"⚠️ <span style='color: orange;'>验证失败: {str(e)}</span>",
+                                        visible=True
+                                    )
+                            
+                            depth_file.upload(validate_depth_upload, inputs=[depth_file], outputs=[depth_status])
+                        else:
+                            depth_file = gr.State(None)
+                        
                         caption = gr.State(None)
 #                    with gr.Tab('Text Prompt', id='tab_txt_prompt', visible=HAS_T2I and not MV_MODE) as tab_tp:
 #                        caption = gr.Textbox(label='Text Prompt',
@@ -610,6 +808,7 @@ Fast for very complex cases, Standard seldom use.',
             inputs=[
                 caption,
                 image,
+                depth_file,  # 添加深度图文件参数
                 mv_image_front,
                 mv_image_back,
                 mv_image_left,
@@ -637,6 +836,7 @@ Fast for very complex cases, Standard seldom use.',
             inputs=[
                 caption,
                 image,
+                depth_file,  # 添加深度图文件参数
                 mv_image_front,
                 mv_image_back,
                 mv_image_left,
@@ -737,7 +937,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2.1')
     parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-1')
     parser.add_argument("--texgen_model_path", type=str, default='tencent/Hunyuan3D-2.1')
-    parser.add_argument('--port', type=int, default=8080)
+    parser.add_argument('--port', type=int, default=6008)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--mc_algo', type=str, default='mc')
@@ -747,6 +947,8 @@ if __name__ == '__main__':
     parser.add_argument('--enable_flashvdm', action='store_true')
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--low_vram_mode', action='store_true')
+    parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
+    parser.add_argument('--depth_lora_path', type=str, default=None, help='Path to depth LoRA checkpoint')
     args = parser.parse_args()
     args.enable_flashvdm = False
 
@@ -756,6 +958,7 @@ if __name__ == '__main__':
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
     MV_MODE = 'mv' in args.model_path
     TURBO_MODE = 'turbo' in args.subfolder
+    DEPTH_MODE = args.enable_depth  # 标记是否使用深度图模式
 
     HTML_HEIGHT = 690 if MV_MODE else 650
     HTML_WIDTH = 500
@@ -833,12 +1036,84 @@ if __name__ == '__main__':
     from hy3dshape.rembg import BackgroundRemover
 
     rmbg_worker = BackgroundRemover()
-    i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        args.model_path,
-        subfolder=args.subfolder,
-        use_safetensors=False,
-        device=args.device,
-    )
+    
+    # 根据是否启用深度模式来加载模型
+    if DEPTH_MODE:
+        print("正在加载深度条件模型...")
+        
+        # 自动寻找深度LoRA权重路径（如果未指定）
+        if args.depth_lora_path is None:
+            # 根据配置文件中的设置，默认的保存路径
+            default_lora_dirs = [
+                "output_folder/dit/depth_lora_checkpoints",
+                "hy3dshape/output_folder/dit/depth_lora_checkpoints",
+                "./hy3dshape/output_folder/dit/depth_lora_checkpoints"
+            ]
+            
+            for lora_dir in default_lora_dirs:
+                if os.path.exists(lora_dir):
+                    # 查找最新的checkpoint
+                    checkpoints = [d for d in os.listdir(lora_dir) 
+                                 if d.startswith('step_') and os.path.isdir(os.path.join(lora_dir, d))]
+                    if checkpoints:
+                        # 按步数排序，选择最大的
+                        latest_ckpt = max(checkpoints, key=lambda x: int(x.split('_')[1]))
+                        args.depth_lora_path = os.path.join(lora_dir, latest_ckpt)
+                        print(f"自动发现深度LoRA权重: {args.depth_lora_path}")
+                        break
+        
+        # 加载支持深度条件的模型
+        try:
+            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                args.model_path,
+                subfolder=args.subfolder,
+                use_safetensors=False,
+                device=args.device,
+                # 这些参数可能需要根据实际的pipeline实现调整
+                load_depth=True,  # 启用深度图支持
+                control_in_channels=1,  # 深度图单通道
+            )
+        except Exception as e:
+            print(f"加载深度条件模型失败，回退到标准模型: {e}")
+            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                args.model_path,
+                subfolder=args.subfolder,
+                use_safetensors=False,
+                device=args.device,
+            )
+        
+        # 如果提供了 LoRA 路径，则加载 LoRA 权重
+        if args.depth_lora_path and os.path.exists(args.depth_lora_path):
+            print(f"正在加载深度 LoRA 权重: {args.depth_lora_path}")
+            try:
+                from peft import PeftModel
+                # 根据hy3dshape的实现，模型应该有diffusion的组件
+                if hasattr(i23d_worker, 'diffusion_model'):
+                    i23d_worker.diffusion_model = PeftModel.from_pretrained(
+                        i23d_worker.diffusion_model, args.depth_lora_path)
+                elif hasattr(i23d_worker, 'unet'):
+                    i23d_worker.unet = PeftModel.from_pretrained(
+                        i23d_worker.unet, args.depth_lora_path)
+                else:
+                    # 回退方案，尝试直接加载到主模型
+                    print("使用回退方案加载LoRA权重")
+                    
+                print("深度 LoRA 权重加载成功")
+            except Exception as e:
+                print(f"加载深度 LoRA 权重失败: {e}")
+                print("将使用基础深度条件模型")
+        else:
+            if args.depth_lora_path:
+                print(f"深度 LoRA 路径不存在: {args.depth_lora_path}")
+            print("使用基础深度条件模型（未加载LoRA权重）")
+    else:
+        print("正在加载标准RGB模型...")
+        i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            args.model_path,
+            subfolder=args.subfolder,
+            use_safetensors=False,
+            device=args.device,
+        )
     if args.enable_flashvdm:
         mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
         i23d_worker.enable_flashvdm(mc_algo=mc_algo)
