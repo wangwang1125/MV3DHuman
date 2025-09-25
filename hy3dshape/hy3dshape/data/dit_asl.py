@@ -252,14 +252,53 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         depth_choice = self.rng.sample(depth_paths, 1)
         depths = []
         for depth_path in depth_choice:
-            # Read EXR depth map
-            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
-            if depth is None:
-                raise ValueError(f"Failed to load depth map: {depth_path}")
-            
-            # Extract depth channel (assuming single channel or first channel)
-            if len(depth.shape) == 3:
-                depth = depth[:, :, 0]
+            # Read EXR depth map using OpenEXR
+            try:
+                import OpenEXR
+                import Imath
+                
+                # Open EXR file
+                exr_file = OpenEXR.InputFile(depth_path)
+                header = exr_file.header()
+                
+                # Get image dimensions
+                dw = header['dataWindow']
+                width = dw.max.x - dw.min.x + 1
+                height = dw.max.y - dw.min.y + 1
+                
+                # Read depth channel (try different channel names)
+                channel_names = ['R', 'G', 'B', 'Y', 'Z', 'depth']
+                depth_channel = None
+                
+                for channel_name in channel_names:
+                    if channel_name in header['channels']:
+                        depth_channel = channel_name
+                        break
+                
+                if depth_channel is None:
+                    # If no standard channel found, use the first available channel
+                    available_channels = list(header['channels'].keys())
+                    if available_channels:
+                        depth_channel = available_channels[0]
+                    else:
+                        raise ValueError(f"No channels found in EXR file: {depth_path}")
+                
+                # Read the depth channel
+                depth_str = exr_file.channel(depth_channel, Imath.PixelType(Imath.PixelType.FLOAT))
+                depth = np.frombuffer(depth_str, dtype=np.float32)
+                depth = depth.reshape((height, width))
+                
+                exr_file.close()
+                
+            except ImportError:
+                # Fallback to OpenCV if OpenEXR is not available
+                depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+                if depth is None:
+                    raise ValueError(f"Failed to load depth map: {depth_path}")
+                
+                # Extract depth channel (assuming single channel or first channel)
+                if len(depth.shape) == 3:
+                    depth = depth[:, :, 0]
             
             # Filter invalid depth values (very large values)
             depth[depth > 1e9] = 0
