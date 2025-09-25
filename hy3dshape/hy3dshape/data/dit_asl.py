@@ -287,6 +287,8 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
                 depth_str = exr_file.channel(depth_channel, Imath.PixelType(Imath.PixelType.FLOAT))
                 depth = np.frombuffer(depth_str, dtype=np.float32)
                 depth = depth.reshape((height, width))
+                # Create a writable copy to avoid "assignment destination is read-only" error
+                depth = depth.copy()
                 
                 exr_file.close()
                 
@@ -317,21 +319,40 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
                     non_zero_coords = np.argwhere(binary)
                     x_min, y_min = non_zero_coords.min(axis=0)
                     x_max, y_max = non_zero_coords.max(axis=0)
-                    depth, _ = padding(
-                        depth[max(x_min - 5, 0):min(x_max + 5, h), max(y_min - 5, 0):min(y_max + 5, w)],
-                        mask[max(x_min - 5, 0):min(x_max + 5, h), max(y_min - 5, 0):min(y_max + 5, w)],
+                    # Crop the depth and mask
+                    cropped_depth = depth[max(x_min - 5, 0):min(x_max + 5, h), max(y_min - 5, 0):min(y_max + 5, w)]
+                    cropped_mask = mask[max(x_min - 5, 0):min(x_max + 5, h), max(y_min - 5, 0):min(y_max + 5, w)]
+                    
+                    # Convert single-channel depth to 3-channel for padding function compatibility
+                    cropped_depth_3ch = np.stack([cropped_depth, cropped_depth, cropped_depth], axis=-1)
+                    
+                    # Apply padding
+                    padded_depth_3ch, _ = padding(
+                        cropped_depth_3ch,
+                        cropped_mask,
                         padding_ratio_range=self.padding_ratio_range
                     )
+                    
+                    # Convert back to single channel (take first channel)
+                    depth = padded_depth_3ch[:, :, 0].astype(np.float32)
+            
+            # Apply image transform if available (resize, normalize) - do this on numpy array
+            if self.image_transform:
+                # Convert single-channel depth to 3-channel numpy array for transform compatibility
+                depth_3ch = np.stack([depth, depth, depth], axis=-1)
+                # Convert to PIL Image for transform
+                from PIL import Image
+                depth_pil = Image.fromarray((depth_3ch * 255).astype(np.uint8))
+                depth_pil = self.image_transform(depth_pil)
+                # Convert back to numpy and extract single channel
+                depth_np = np.array(depth_pil).astype(np.float32) / 255.0
+                if len(depth_np.shape) == 3:
+                    depth = depth_np[:, :, 0]  # Take first channel
+                else:
+                    depth = depth_np
             
             # Convert to tensor and add channel dimension
             depth = torch.FloatTensor(depth).unsqueeze(0)  # Shape: (1, H, W)
-            
-            # Apply image transform if available (resize, normalize)
-            if self.image_transform:
-                # Convert to 3-channel for transform compatibility, then back to 1-channel
-                depth_3ch = depth.repeat(3, 1, 1)
-                depth_3ch = self.image_transform(depth_3ch)
-                depth = depth_3ch[0:1]  # Take only first channel
             
             depths.append(depth)
         
