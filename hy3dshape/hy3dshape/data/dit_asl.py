@@ -143,11 +143,12 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         deterministic = False,
         worker_seed = None,
         padding = True,
-        padding_ratio_range=[1.15, 1.15]
+        padding_ratio_range=[1.15, 1.15],
+        load_depth: bool = False
     ):
         super().__init__()
         if isinstance(data_list, str) and data_list.endswith('.json'):
-            self.data_list = read_json(data_list_json)
+            self.data_list = read_json(data_list)
         elif isinstance(data_list, str) and os.path.isdir(data_list):
             self.data_list = glob.glob(data_list + '/*')
         else:
@@ -165,6 +166,7 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
 
         self.padding = padding
         self.padding_ratio_range = padding_ratio_range
+        self.load_depth = load_depth
         
         rank_zero_info(f'*' * 50)
         rank_zero_info(f'Dataset Infos:')
@@ -172,6 +174,7 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         rank_zero_info(f'# of Surface Points: {self.pc_size}')
         rank_zero_info(f'# of Sharpedge Surface Points: {self.pc_sharpedge_size}')
         rank_zero_info(f'Using sharp edge label: {self.sharpedge_label}')
+        rank_zero_info(f'Load depth maps: {self.load_depth}')
         rank_zero_info(f'*' * 50)
 
 
@@ -244,6 +247,58 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         masks = torch.cat(masks, dim=0)[:1, ...]
         return images, masks
 
+    def load_depth_maps(self, depth_paths):
+        """Load and preprocess depth maps from EXR files"""
+        depth_choice = self.rng.sample(depth_paths, 1)
+        depths = []
+        for depth_path in depth_choice:
+            # Read EXR depth map
+            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+            if depth is None:
+                raise ValueError(f"Failed to load depth map: {depth_path}")
+            
+            # Extract depth channel (assuming single channel or first channel)
+            if len(depth.shape) == 3:
+                depth = depth[:, :, 0]
+            
+            # Filter invalid depth values (very large values)
+            depth[depth > 1e9] = 0
+            
+            # Normalize depth to [0, 1] range
+            if depth.max() > depth.min():
+                depth = (depth - depth.min()) / (depth.max() - depth.min())
+            
+            # Apply same padding as images if enabled
+            if self.padding:
+                # For depth, we don't have a mask, so we create one from non-zero values
+                mask = (depth > 0).astype(np.uint8) * 255
+                h, w = depth.shape[:2]
+                binary = mask > 0.3
+                if np.any(binary):
+                    non_zero_coords = np.argwhere(binary)
+                    x_min, y_min = non_zero_coords.min(axis=0)
+                    x_max, y_max = non_zero_coords.max(axis=0)
+                    depth, _ = padding(
+                        depth[max(x_min - 5, 0):min(x_max + 5, h), max(y_min - 5, 0):min(y_max + 5, w)],
+                        mask[max(x_min - 5, 0):min(x_max + 5, h), max(y_min - 5, 0):min(y_max + 5, w)],
+                        padding_ratio_range=self.padding_ratio_range
+                    )
+            
+            # Convert to tensor and add channel dimension
+            depth = torch.FloatTensor(depth).unsqueeze(0)  # Shape: (1, H, W)
+            
+            # Apply image transform if available (resize, normalize)
+            if self.image_transform:
+                # Convert to 3-channel for transform compatibility, then back to 1-channel
+                depth_3ch = depth.repeat(3, 1, 1)
+                depth_3ch = self.image_transform(depth_3ch)
+                depth = depth_3ch[0:1]  # Take only first channel
+            
+            depths.append(depth)
+        
+        depths = torch.cat(depths, dim=0)  # Shape: (1, H, W)
+        return depths
+
     def decode(self, item):
         uid = item.split('/')[-1]
         render_img_paths = [os.path.join(item, f'render_cond/{i:03d}.png') for i in range(24)]
@@ -253,6 +308,12 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         # watertight_obj_path = os.path.join(item, f'geo_data/{uid}_watertight.obj')
         sample = {}
         sample["image"] = render_img_paths
+        
+        # Load depth maps if enabled
+        if self.load_depth:
+            depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in range(24)]
+            sample["depth"] = depth_img_paths
+        
         surface_data = read_npz(surface_npz_path)
         sample["random_surface"] = surface_data['random_surface']
         sample["sharpedge_surface"] = surface_data['sharp_surface']
@@ -264,13 +325,20 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         sharpedge_surface = sample.get("sharpedge_surface", 0)
         image_input, mask_input = self.load_render(sample['image'])
         surface, geo_points = self.load_surface_sdf_points(rng, random_surface, sharpedge_surface)
-        sample = {
+        
+        result_sample = {
             "surface": surface,
             "geo_points": geo_points,
             "image": image_input,
             "mask": mask_input,
         }
-        return sample
+        
+        # Load and process depth maps if enabled
+        if self.load_depth and "depth" in sample:
+            depth_input = self.load_depth_maps(sample['depth'])
+            result_sample["depth"] = depth_input
+        
+        return result_sample
 
     def __iter__(self):
         total_num = 0
@@ -307,7 +375,8 @@ class AlignedShapeLatentModule(LightningDataModule):
         sharpedge_label: bool = False,
         return_normal: bool = False, 
         padding = True,
-        padding_ratio_range=[1.15, 1.15]
+        padding_ratio_range=[1.15, 1.15],
+        load_depth: bool = False
     ):
 
         super().__init__()
@@ -338,6 +407,7 @@ class AlignedShapeLatentModule(LightningDataModule):
 
         self.padding = padding
         self.padding_ratio_range = padding_ratio_range
+        self.load_depth = load_depth
         
     def train_dataloader(self):
         asl_params = {
@@ -349,7 +419,8 @@ class AlignedShapeLatentModule(LightningDataModule):
             "sharpedge_label": self.sharpedge_label,
             "return_normal": self.return_normal,
             "padding": self.padding,
-            "padding_ratio_range": self.padding_ratio_range
+            "padding_ratio_range": self.padding_ratio_range,
+            "load_depth": self.load_depth
         }
         dataset = AlignedShapeLatentDataset(**asl_params)
         return torch.utils.data.DataLoader(
@@ -371,7 +442,8 @@ class AlignedShapeLatentModule(LightningDataModule):
             "sharpedge_label": self.sharpedge_label,
             "return_normal": self.return_normal, 
             "padding": self.padding,
-            "padding_ratio_range": self.padding_ratio_range
+            "padding_ratio_range": self.padding_ratio_range,
+            "load_depth": self.load_depth
         }
         dataset = AlignedShapeLatentDataset(**asl_params)
         return torch.utils.data.DataLoader(

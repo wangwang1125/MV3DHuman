@@ -27,6 +27,8 @@ class Diffuser(pl.LightningModule):
         image_processor_cfg=None,
         lora_config=None,
         ema_config=None,
+        control_net_config=None,
+        control_in_channels: int = None,
         first_stage_key: str = "surface",
         cond_stage_key: str = "image",
         scale_by_std: bool = False,
@@ -59,6 +61,14 @@ class Diffuser(pl.LightningModule):
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
+        # ========= config controlnet model ========= #
+        self.controlnet = None
+        self.control_in_channels = control_in_channels
+        if control_net_config is not None:
+            # For hy3dshape, we need to create a simple ControlNet adapter
+            # that processes depth input and injects features into the main model
+            self.controlnet = self._create_depth_controlnet(control_in_channels or 1)
+            
         # ========= config lora model ========= #
         if lora_config is not None:
             from peft import LoraConfig, get_peft_model
@@ -67,7 +77,12 @@ class Diffuser(pl.LightningModule):
                 lora_alpha=lora_config.rank,
                 target_modules=lora_config.get('target_modules')
             )
+            # Apply LoRA to the main model
             self.model = get_peft_model(self.model, loraconfig)
+            
+            # Also apply LoRA to ControlNet if it exists
+            if self.controlnet is not None:
+                self.controlnet = get_peft_model(self.controlnet, loraconfig)
 
         # ========= config ema model ========= #
         self.ema_config = ema_config
@@ -179,6 +194,11 @@ class Diffuser(pl.LightningModule):
 
         params_list = []
         trainable_parameters = list(self.model.parameters())
+        
+        # Add ControlNet parameters if it exists
+        if self.controlnet is not None:
+            trainable_parameters.extend(list(self.controlnet.parameters()))
+            
         params_list.append({'params': trainable_parameters, 'lr': lr})
 
         no_decay = ['bias', 'norm.weight', 'norm.bias', 'norm1.weight', 'norm1.bias', 'norm2.weight', 'norm2.bias']
@@ -256,6 +276,15 @@ class Diffuser(pl.LightningModule):
     def forward(self, batch):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16): #float32 for text
             contexts = self.cond_stage_model(image=batch.get('image'), text=batch.get('text'), mask=batch.get('mask'))
+            
+            # Process depth conditioning if available
+            if self.controlnet is not None and 'depth' in batch:
+                depth = batch['depth'].to(self.device)  # (B, 1, H, W)
+                depth_features = self.controlnet(depth)  # (B, hidden_dim)
+                # Inject depth features into contexts
+                if 'additional' not in contexts:
+                    contexts['additional'] = {}
+                contexts['additional']['depth'] = depth_features
 
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             with torch.no_grad():
@@ -347,3 +376,44 @@ class Diffuser(pl.LightningModule):
 
         self.cond_stage_model.disable_drop = False
         return [outputs]
+    
+    def _create_depth_controlnet(self, in_channels=1):
+        """Create a simple ControlNet-like adapter for depth conditioning"""
+        import torch.nn as nn
+        
+        class DepthControlNet(nn.Module):
+            def __init__(self, in_channels, out_channels=None):
+                super().__init__()
+                # Simple depth feature extractor
+                out_channels = out_channels or 768  # Match DiT hidden dim
+                
+                self.depth_encoder = nn.Sequential(
+                    nn.Conv2d(in_channels, 64, 3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(64, 128, 3, stride=2, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(128, 256, 3, stride=2, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.AdaptiveAvgPool2d((1, 1)),
+                    nn.Flatten(),
+                    nn.Linear(256, out_channels),
+                )
+                
+                # Initialize weights
+                for m in self.modules():
+                    if isinstance(m, nn.Conv2d):
+                        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                    elif isinstance(m, nn.Linear):
+                        nn.init.normal_(m.weight, 0, 0.01)
+                        nn.init.zeros_(m.bias)
+                        
+            def forward(self, depth):
+                """
+                Args:
+                    depth: (B, 1, H, W) depth maps
+                Returns:
+                    depth_features: (B, out_channels) depth features
+                """
+                return self.depth_encoder(depth)
+        
+        return DepthControlNet(in_channels)
