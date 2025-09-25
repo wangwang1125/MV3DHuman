@@ -19,9 +19,9 @@ from pytorch_lightning.callbacks import Callback
 from omegaconf import OmegaConf, ListConfig
 
 class PeftSaveCallback(Callback):
-    def __init__(self, peft_model, save_dir: str, save_every_n_steps: int = None):
+    def __init__(self, save_dir: str, save_every_n_steps: int = None, peft_model=None):
         super().__init__()
-        self.peft_model = peft_model
+        self.peft_model = peft_model  # Can be None initially
         self.save_dir = save_dir
         self.save_every_n_steps = save_every_n_steps
         os.makedirs(self.save_dir, exist_ok=True)
@@ -58,17 +58,39 @@ class PeftSaveCallback(Callback):
     #     else:
     #         return obj
 
+    def on_fit_start(self, trainer, pl_module):
+        """Dynamically get peft_model from the pl_module when training starts"""
+        if self.peft_model is None:
+            # Try to get peft_model from the pl_module
+            if hasattr(pl_module, 'model') and hasattr(pl_module.model, 'peft_config'):
+                self.peft_model = pl_module.model
+                print(f"[PeftSaveCallback] Found PEFT model in pl_module.model")
+            elif hasattr(pl_module, 'peft_model'):
+                self.peft_model = pl_module.peft_model
+                print(f"[PeftSaveCallback] Found PEFT model in pl_module.peft_model")
+            else:
+                print(f"[PeftSaveCallback] Warning: No PEFT model found. Callback will be disabled.")
+                return
+        print(f"[PeftSaveCallback] Initialized with save_dir: {self.save_dir}")
+
     def _convert_peft_config(self):
+        if self.peft_model is None:
+            return
         pc = self.peft_model.peft_config
         self.peft_model.peft_config = self.recursive_convert(pc)
 
     def on_train_epoch_end(self, trainer, pl_module):
+        if self.peft_model is None:
+            return
         self._convert_peft_config()
         save_path = os.path.join(self.save_dir, f"epoch_{trainer.current_epoch}")
         self.peft_model.save_pretrained(save_path)
         print(f"[PeftSaveCallback] Saved LoRA weights to {save_path}")
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if self.peft_model is None:
+            print("peft_model is None")
+            return
         if self.save_every_n_steps is not None:
             global_step = trainer.global_step
             if global_step % self.save_every_n_steps == 0 and global_step > 0:
