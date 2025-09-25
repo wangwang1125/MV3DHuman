@@ -89,6 +89,9 @@ model:
     denoiser_cfg:
       target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
       from_pretrained: tencent/Hunyuan3D-2.1
+      params:
+        with_decoupled_ca: true  # 启用additional条件处理
+        additional_cond_hidden_state: 768  # 深度特征维度
         
     scheduler_cfg:
       transport:

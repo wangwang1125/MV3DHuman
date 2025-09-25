@@ -385,7 +385,7 @@ class Diffuser(pl.LightningModule):
             def __init__(self, in_channels, out_channels=None):
                 super().__init__()
                 # Simple depth feature extractor
-                out_channels = out_channels or 768  # Match DiT hidden dim
+                out_channels = out_channels or 768  # Match additional_cond_hidden_state
                 
                 self.depth_encoder = nn.Sequential(
                     nn.Conv2d(in_channels, 64, 3, padding=1),
@@ -398,6 +398,9 @@ class Diffuser(pl.LightningModule):
                     nn.Flatten(),
                     nn.Linear(256, out_channels),
                 )
+                
+                # 为了匹配DiT期望的序列格式，添加序列扩展
+                self.seq_expand = nn.Linear(out_channels, out_channels)
                 
                 # Initialize weights
                 for m in self.modules():
@@ -412,8 +415,10 @@ class Diffuser(pl.LightningModule):
                 Args:
                     depth: (B, 1, H, W) depth maps
                 Returns:
-                    depth_features: (B, out_channels) depth features
+                    depth_features: (B, 1, out_channels) depth features as sequence
                 """
-                return self.depth_encoder(depth)
+                features = self.depth_encoder(depth)  # (B, out_channels)
+                features = self.seq_expand(features)   # (B, out_channels)
+                return features.unsqueeze(1)          # (B, 1, out_channels) - sequence format
         
         return DepthControlNet(in_channels)

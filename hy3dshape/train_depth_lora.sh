@@ -12,14 +12,11 @@ echo "Config: $config"
 echo "Output dir: $output_dir"
 
 python main.py \
-    --base $config \
-    --train \
-    --name depth_lora_experiment \
-    --logdir $output_dir \
-    --gpus 8 \
-    --strategy ddp \
-    --precision bf16-mixed \
-    --check_val_every_n_epoch 1 \
-    --max_epochs 100
+    -c $config \
+    -ng 8 \
+    --output_dir $output_dir \
+    --use_amp \
+    --amp_type bf16 \
+    --deepspeed
 
 echo "Training completed. Check results in: $output_dir"
