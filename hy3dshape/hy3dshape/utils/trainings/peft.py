@@ -19,12 +19,30 @@ from pytorch_lightning.callbacks import Callback
 from omegaconf import OmegaConf, ListConfig
 
 class PeftSaveCallback(Callback):
-    def __init__(self, peft_model, save_dir: str, save_every_n_steps: int = None):
+    def __init__(self, save_dir: str, save_every_n_steps: int = None, peft_model=None):
         super().__init__()
-        self.peft_model = peft_model
+        self.peft_model = peft_model  # Can be None, will be set later
         self.save_dir = save_dir
         self.save_every_n_steps = save_every_n_steps
         os.makedirs(self.save_dir, exist_ok=True)
+    
+    def setup(self, trainer, pl_module, stage):
+        """Setup callback with the actual PEFT model from pl_module"""
+        super().setup(trainer, pl_module, stage)
+        
+        # Try to get PEFT model from the lightning module
+        if hasattr(pl_module, 'model') and hasattr(pl_module.model, 'peft_config'):
+            self.peft_model = pl_module.model
+            print(f"[PeftSaveCallback] Found PEFT model in pl_module.model")
+            print(f"[PeftSaveCallback] LoRA config: {pl_module.model.peft_config}")
+        elif hasattr(pl_module, 'controlnet') and hasattr(pl_module.controlnet, 'peft_config'):
+            self.peft_model = pl_module.controlnet
+            print(f"[PeftSaveCallback] Found PEFT model in pl_module.controlnet")
+        else:
+            print(f"[PeftSaveCallback] Warning: No PEFT model found.")
+            print(f"[PeftSaveCallback] This is expected when ControlNet doesn't use LoRA.")
+            print(f"[PeftSaveCallback] Only DiT model uses LoRA, ControlNet uses full parameters.")
+            self.peft_model = None
 
     def recursive_convert(self, obj):
         from omegaconf import OmegaConf, ListConfig

@@ -80,9 +80,11 @@ class Diffuser(pl.LightningModule):
             # Apply LoRA to the main model
             self.model = get_peft_model(self.model, loraconfig)
             
-            # Also apply LoRA to ControlNet if it exists
+            # Skip LoRA for ControlNet since it doesn't have matching target modules
+            # ControlNet will be trained with full parameters instead
             if self.controlnet is not None:
-                self.controlnet = get_peft_model(self.controlnet, loraconfig)
+                print(f"[INFO] Skipping LoRA for ControlNet - target modules {lora_config.get('target_modules')} not found")
+                print(f"[INFO] ControlNet will be trained with full parameters")
 
         # ========= config ema model ========= #
         self.ema_config = ema_config
