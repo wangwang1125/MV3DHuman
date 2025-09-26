@@ -23,8 +23,8 @@ dataset:
     val_num_workers: 4
 
     # Data 
-    train_data_list: tools/mini_depth_trainset/preprocessed
-    val_data_list: tools/mini_depth_trainset/preprocessed
+    train_data_list: tools/mini_mv_depth_trainset/preprocessed
+    val_data_list: tools/mini_mv_depth_testset/preprocessed
 
     #! Image loading
     cond_stage_key: "image"
