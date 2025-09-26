@@ -1,5 +1,5 @@
-name: "HunyuanDiT flowmatching with Depth LoRA; VAE: 4096 token length; ImageEncoder: DINO-v2 Large; ImageSize: 518"
-# LoRA fine-tuning with depth condition via ControlNet
+name: "HunyuanDiT flowmatching with Multi-View Depth LoRA; VAE: 4096 token length; ImageEncoder: DINO-v2 Large; ImageSize: 518; Views: 4 (front/back/left/right)"
+# Multi-View LoRA fine-tuning with depth condition via ControlNet
 # training successfully on 8 x H20 with 98G Memory
 
 training:
@@ -15,16 +15,19 @@ training:
   limit_val_batches: 16
 
 dataset:
-  target: hy3dshape.data.dit_asl.AlignedShapeLatentModule
+  target: hy3dshape.data.dit_asl_multiview.AlignedShapeLatentMultiViewModule
   params:
     #! Base setting
-    batch_size: 4
+    batch_size: 2  # 降低batch size因为现在每个样本包含4个视图
     num_workers: 8
     val_num_workers: 4
 
     # Data 
     train_data_list: tools/mini_mv_depth_trainset/preprocessed
     val_data_list: tools/mini_mv_depth_testset/preprocessed
+
+    #! Multi-view setting - NEW
+    multiview_indices: [0, 1, 2, 3] 
 
     #! Image loading
     cond_stage_key: "image"
@@ -63,8 +66,10 @@ model:
       pretrained_model_name_or_path: "lllyasviel/sd-controlnet-depth"
       train_unet: false  # Only train LoRA, not full UNet
       
-    # Model parameters - NEW
-    control_in_channels: 1  # Single channel depth input
+    # Model parameters - Multi-view support
+    control_in_channels: 4  # 4 channels for 4 depth maps (front/back/left/right)
+    num_views: 4  # Number of input views
+    multi_view_fusion: "attention"  # How to fuse multiple views: "concat", "attention", "average"
 
     # ema_config:
     #   ema_model: LitEma
@@ -85,6 +90,9 @@ model:
                 version: 'facebook/dinov2-large'
                 image_size: 518
                 use_cls_token: true
+                # Multi-view support
+                num_views: 4
+                view_fusion_type: "attention"  # How to process multiple views
 
     denoiser_cfg:
       target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
@@ -92,6 +100,9 @@ model:
       params:
         with_decoupled_ca: true  # 启用additional条件处理
         additional_cond_hidden_state: 768  # 深度特征维度
+        # Multi-view support
+        num_views: 4
+        multi_view_attention: true  # Enable cross-view attention
         
     scheduler_cfg:
       transport:
@@ -142,12 +153,14 @@ callbacks:
         octree_depth: 8
         num_chunks: 50000
         mc_level: 0.0
+        # Multi-view support
+        save_multiview: true  # Save all 4 views in logs
         
     # LoRA Saving Callback - NEW
     peft_save:
       target: hy3dshape.utils.trainings.peft.PeftSaveCallback
       params:
-        save_dir: "output_folder/dit/depth_lora_checkpoints"
+        save_dir: "output_folder/dit/multiview_depth_lora_checkpoints"
         save_every_n_steps: 1000
     
     file_loggers:
