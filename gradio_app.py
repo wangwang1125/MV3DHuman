@@ -948,7 +948,7 @@ if __name__ == '__main__':
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--low_vram_mode', action='store_true')
     parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
-    parser.add_argument('--depth_lora_path', type=str, default=None, help='Path to depth LoRA checkpoint')
+    parser.add_argument('--depth_lora_path', type=str, default="./hy3dshape/output_folder/dit/depth_lora_checkpoints/ckpt/ckpt-step=00000200.ckpt", help='Path to depth LoRA checkpoint')
     args = parser.parse_args()
     args.enable_flashvdm = False
 
@@ -1047,7 +1047,7 @@ if __name__ == '__main__':
             default_lora_dirs = [
                 "output_folder/dit/depth_lora_checkpoints",
                 "hy3dshape/output_folder/dit/depth_lora_checkpoints",
-                "./hy3dshape/output_folder/dit/depth_lora_checkpoints"
+                "./hy3dshape/output_folder/dit/depth_lora_finetuning/ckpt"
             ]
             
             for lora_dir in default_lora_dirs:
@@ -1087,20 +1087,78 @@ if __name__ == '__main__':
             print(f"正在加载深度 LoRA 权重: {args.depth_lora_path}")
             try:
                 from peft import PeftModel
-                # 根据hy3dshape的实现，模型应该有diffusion的组件
-                if hasattr(i23d_worker, 'diffusion_model'):
-                    i23d_worker.diffusion_model = PeftModel.from_pretrained(
-                        i23d_worker.diffusion_model, args.depth_lora_path)
-                elif hasattr(i23d_worker, 'unet'):
-                    i23d_worker.unet = PeftModel.from_pretrained(
-                        i23d_worker.unet, args.depth_lora_path)
-                else:
-                    # 回退方案，尝试直接加载到主模型
-                    print("使用回退方案加载LoRA权重")
+                
+                # 输出调试信息
+                print(f"Pipeline 类型: {type(i23d_worker)}")
+                if hasattr(i23d_worker, 'model'):
+                    print(f"Pipeline.model 类型: {type(i23d_worker.model)}")
+                    print(f"Pipeline.model 属性: {[attr for attr in dir(i23d_worker.model) if not attr.startswith('_')][:10]}")
+                
+                # 检查是否是Lightning checkpoint格式 (.ckpt)
+                if args.depth_lora_path.endswith('.ckpt'):
+                    print("检测到Lightning checkpoint格式，尝试直接加载状态字典...")
+                    ckpt = torch.load(args.depth_lora_path, map_location='cpu')
                     
-                print("深度 LoRA 权重加载成功")
+                    if 'state_dict' in ckpt:
+                        state_dict = ckpt['state_dict']
+                        print(f"检查点包含 {len(state_dict)} 个权重")
+                        
+                        # 检查哪些权重可以加载
+                        if hasattr(i23d_worker, 'model') and hasattr(i23d_worker.model, 'load_state_dict'):
+                            # 尝试直接加载到整个diffuser模型
+                            try:
+                                i23d_worker.model.load_state_dict(state_dict, strict=False)
+                                print("✅ 成功通过Lightning checkpoint加载权重到整个模型")
+                            except Exception as load_error:
+                                print(f"❌ 直接加载失败: {load_error}")
+                                # 尝试去掉'model.'前缀再加载到子模型
+                                model_state_dict = {}
+                                for key, value in state_dict.items():
+                                    if key.startswith('model.'):
+                                        new_key = key[6:]  # 去掉'model.'前缀
+                                        model_state_dict[new_key] = value
+                                
+                                if model_state_dict and hasattr(i23d_worker.model, 'model'):
+                                    try:
+                                        i23d_worker.model.model.load_state_dict(model_state_dict, strict=False)
+                                        print("✅ 成功通过去前缀的方式加载权重到主DiT模型")
+                                    except Exception as sub_error:
+                                        print(f"❌ 子模型加载也失败: {sub_error}")
+                        else:
+                            print("❌ 模型不支持状态字典加载")
+                    else:
+                        print("❌ checkpoint格式无效，缺少state_dict")
+                
+                elif os.path.isdir(args.depth_lora_path):
+                    # 标准的PEFT格式目录，按照test_depth_inference.py的方式加载
+                    print("检测到PEFT目录格式，使用标准LoRA加载方式...")
+                    
+                    success_count = 0
+                    
+                    # 加载主DiT模型的LoRA权重
+                    if hasattr(i23d_worker, 'model') and hasattr(i23d_worker.model, 'model'):
+                        try:
+                            print("正在加载LoRA权重到主DiT模型...")
+                            i23d_worker.model.model = PeftModel.from_pretrained(
+                                i23d_worker.model.model, args.depth_lora_path)
+                            print("✅ 主DiT模型LoRA权重加载成功")
+                            success_count += 1
+                        except Exception as e:
+                            print(f"❌ 主DiT模型LoRA权重加载失败: {e}")
+                    
+                    if success_count > 0:
+                        print(f"✅ 总共成功加载 {success_count} 个组件的LoRA权重")
+                    else:
+                        print("❌ 没有成功加载任何LoRA权重")
+                        
+                else:
+                    print(f"❌ 不支持的LoRA权重格式: {args.depth_lora_path}")
+                    
             except Exception as e:
-                print(f"加载深度 LoRA 权重失败: {e}")
+                import traceback
+                print(f"❌ 加载深度 LoRA 权重时发生异常: {e}")
+                print("详细错误信息:")
+                traceback.print_exc()
                 print("将使用基础深度条件模型")
         else:
             if args.depth_lora_path:
