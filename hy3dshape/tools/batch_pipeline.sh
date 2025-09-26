@@ -4,7 +4,7 @@
 # 基于原始pipeline.sh修改
 
 export OPENCV_IO_ENABLE_OPENEXR=1
-export OUTPUT_FOLDER=more_depth_trainset/preprocessed
+export OUTPUT_FOLDER=mini_mv_depth_trainset/preprocessed
 export BLENDER_PATH=/mnt/d/workapp/wsl/blender/4.5/python/bin/python3.11
 
 # 自定义输入文件夹路径 - 可以修改为任意目录
