@@ -803,20 +803,16 @@ def get_transform_matrix(obj: bpy.types.Object) -> list:
 def main(arg):
     os.makedirs(arg.output_folder, exist_ok=True)
     
-    # if arg.four_view_mode:
-    #     views = four_view_camera_sequence()
-    #     arg.save_mesh = True
-    #     arg.save_albedo = True
-    #     arg.save_normal = True
-    #     arg.save_depth = True
-    # el
-    if arg.geo_mode:
-        if arg.views!=4:
-            views = trellis_cond_camera_sequence(arg.views)
-        else:
-            views = four_view_camera_sequence()
+    if arg.four_view_mode:
+        views = four_view_camera_sequence()
         arg.save_mesh = True
+        arg.save_albedo = True
+        arg.save_normal = True
         arg.save_depth = True
+    elif arg.geo_mode:
+        views = trellis_cond_camera_sequence(arg.views)
+        arg.save_depth = True
+        arg.save_mesh = True
     else:
         views = orthogonal_camera_sequence()
         arg.save_albedo = True
@@ -947,6 +943,8 @@ if __name__ == '__main__':
         help='Blender internal engine for rendering. E.g. CYCLES, BLENDER_EEVEE, ...')
     parser.add_argument('--geo_mode', action='store_true', 
         help='Geometry mode for rendering.')
+    parser.add_argument('--four_view_mode', action='store_true', 
+        help='Four view mode for rendering front, back, left, right views.')
     parser.add_argument('--save_depth', action='store_true', 
         help='Save the depth maps.')
     parser.add_argument('--save_normal', action='store_true', 

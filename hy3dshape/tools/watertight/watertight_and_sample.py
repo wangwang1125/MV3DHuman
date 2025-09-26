@@ -89,38 +89,38 @@ def sample_sdf(mesh, random_surface, sharp_surface):
 
     sign_type = igl.SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER
     try:
-        vol_sdf, I, C = igl.signed_distance(
-            vol_points.astype(np.float32), 
-            mesh.vertices, mesh.faces, 
-            return_normals=False,
+        vol_sdf, I, C, _ = igl.signed_distance(
+            vol_points.astype(np.float64), 
+            np.array(mesh.vertices, dtype=np.float64), 
+            np.array(mesh.faces, dtype=np.int64), 
             sign_type=sign_type)
     except:
-        vol_sdf, I, C = igl.signed_distance(
-            vol_points.astype(np.float32), 
-            mesh.vertices, mesh.faces, 
-            return_normals=False)
+        vol_sdf, I, C, _ = igl.signed_distance(
+            vol_points.astype(np.float64), 
+            np.array(mesh.vertices, dtype=np.float64), 
+            np.array(mesh.faces, dtype=np.int64))
     try:
-        random_near_sdf, I, C = igl.signed_distance(
-            random_near_points.astype(np.float32), 
-            mesh.vertices, mesh.faces, 
-            return_normals=False,
+        random_near_sdf, I, C, _ = igl.signed_distance(
+            random_near_points.astype(np.float64), 
+            np.array(mesh.vertices, dtype=np.float64), 
+            np.array(mesh.faces, dtype=np.int64), 
             sign_type=sign_type)
     except:
-        random_near_sdf, I, C = igl.signed_distance(
-            random_near_points.astype(np.float32), 
-            mesh.vertices, mesh.faces, 
-            return_normals=False)
+        random_near_sdf, I, C, _ = igl.signed_distance(
+            random_near_points.astype(np.float64), 
+            np.array(mesh.vertices, dtype=np.float64), 
+            np.array(mesh.faces, dtype=np.int64))
     try:
-        sharp_near_sdf, I, C = igl.signed_distance(
-            sharp_near_points.astype(np.float32), 
-            mesh.vertices, mesh.faces, 
-            return_normals=False,
+        sharp_near_sdf, I, C, _ = igl.signed_distance(
+            sharp_near_points.astype(np.float64), 
+            np.array(mesh.vertices, dtype=np.float64), 
+            np.array(mesh.faces, dtype=np.int64), 
             sign_type=sign_type)
     except:
-        sharp_near_sdf, I, C = igl.signed_distance(
-            sharp_near_points.astype(np.float32), 
-            mesh.vertices, mesh.faces, 
-            return_normals=False)
+        sharp_near_sdf, I, C, _ = igl.signed_distance(
+            sharp_near_points.astype(np.float64), 
+            np.array(mesh.vertices, dtype=np.float64), 
+            np.array(mesh.faces, dtype=np.int64))
         
     vol_label = -vol_sdf
     random_near_label = -random_near_sdf
@@ -187,12 +187,12 @@ def Watertight(V, F, epsilon = 2.0/256, grid_res = 256):
     grid_points = np.vstack([X.ravel(), Y.ravel(), Z.ravel()]).T
 
     # Compute SDF at grid points using igl.signed_distance with pseudo normals
-    sdf, _, _ = igl.signed_distance(
+    sdf, _, _, _ = igl.signed_distance(
         grid_points, V, F, sign_type=igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
     )
  
-    # igl.marching_cubes returns (vertices, faces)
-    mc_verts, mc_faces = igl.marching_cubes(epsilon - np.abs(sdf), grid_points, grid_res, grid_res, grid_res, 0.0)
+    # igl.marching_cubes returns (vertices, faces, edge_to_vertex_map)
+    mc_verts, mc_faces, _ = igl.marching_cubes(epsilon - np.abs(sdf), grid_points, grid_res, grid_res, grid_res, 0.0)
 
     # mc_verts: (k x 3) array of vertices of the epsilon contour
     # mc_faces: (l x 3) array of faces of the epsilon contour
@@ -220,4 +220,4 @@ if __name__ == '__main__':
     np.savez(export_surface, **surface_data)
     export_sdf = f'{name}_sdf.npz'
     np.savez(export_sdf, **sdf_data)
-    igl.write_obj(f'{name}_watertight.obj', mc_verts, mc_faces)
+    igl.writeOBJ(f'{name}_watertight.obj', mc_verts, mc_faces)
