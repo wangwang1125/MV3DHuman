@@ -69,7 +69,6 @@ model:
       
     # Model parameters for multi-view support
     control_in_channels: 1  # Input channels per depth map
-    num_views: 4  # Number of input views
 
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
