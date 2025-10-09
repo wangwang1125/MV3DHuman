@@ -135,12 +135,11 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         return surface, geo_points
 
     def load_multiview_render(self, imgs_path):
-        """Load multi-view images based on specified indices"""
-        # 选择指定的多视图索引
-        imgs_choice = [imgs_path[i] for i in self.multiview_indices]
+        """Load multi-view images from provided paths"""
+        # 直接使用传入的图片路径（已经在decode函数中根据multiview_indices筛选过）
         images, masks = [], []
         
-        for image_path in imgs_choice:
+        for image_path in imgs_path:
             if not os.path.exists(image_path):
                 rank_zero_info(f"Warning: Image path does not exist: {image_path}")
                 continue
@@ -181,12 +180,11 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         return images, masks
 
     def load_multiview_depth_maps(self, depth_paths):
-        """Load multi-view depth maps based on specified indices"""
-        # 选择指定的多视图深度图索引
-        depth_choice = [depth_paths[i] for i in self.multiview_indices]
+        """Load multi-view depth maps from provided paths"""
+        # 直接使用传入的深度图路径（已经在decode函数中根据multiview_indices筛选过）
         depths = []
         
-        for depth_path in depth_choice:
+        for depth_path in depth_paths:
             if not os.path.exists(depth_path):
                 rank_zero_info(f"Warning: Depth path does not exist: {depth_path}")
                 # 创建零深度图作为占位符
@@ -312,18 +310,29 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
             # 取最大值融合
             return depths.max(dim=0, keepdim=True)[0]  # Shape: (1, 1, H, W)
         elif self.depth_fusion_strategy == "weighted":
-            # 简单的加权融合（后续可以改为学习的权重）
-            weights = torch.tensor([0.3, 0.2, 0.3, 0.2], device=depths.device).view(-1, 1, 1, 1)
-            weighted = (depths * weights[:len(depths)]).sum(dim=0, keepdim=True)
+            # 动态加权融合，根据实际视图数量生成权重
+            num_views = depths.shape[0]
+            # 生成均匀权重，也可以根据需要自定义权重
+            weights = torch.ones(num_views, device=depths.device) / num_views
+            weights = weights.view(-1, 1, 1, 1)
+            weighted = (depths * weights).sum(dim=0, keepdim=True)
             return weighted  # Shape: (1, 1, H, W)
         else:
             # 默认返回多视图格式
             return depths
 
     def decode(self, item):
-        """Same as original but load all 24 views for selection"""
+        """Generate image paths based on multiview_indices configuration"""
         uid = item.split('/')[-1]
-        render_img_paths = [os.path.join(item, f'render_cond/{i:03d}.png') for i in range(24)]
+        
+        # 根据multiview_indices生成对应的图片路径
+        if self.multiview_indices is not None and len(self.multiview_indices) > 0:
+            # 使用配置的multiview_indices
+            render_img_paths = [os.path.join(item, f'render_cond/{i:03d}.png') for i in self.multiview_indices]
+        else:
+            # 如果没有设置multiview_indices，使用默认的24个视图
+            render_img_paths = [os.path.join(item, f'render_cond/{i:03d}.png') for i in range(24)]
+        
         surface_npz_path = os.path.join(item, f'geo_data/{uid}_surface.npz')
         
         sample = {}
@@ -331,7 +340,12 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         
         # Load depth maps if enabled
         if self.load_depth:
-            depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in range(24)]
+            if self.multiview_indices is not None and len(self.multiview_indices) > 0:
+                # 使用配置的multiview_indices
+                depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in self.multiview_indices]
+            else:
+                # 如果没有设置multiview_indices，使用默认的24个视图
+                depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in range(24)]
             sample["depth"] = depth_img_paths
         
         surface_data = read_npz(surface_npz_path)
