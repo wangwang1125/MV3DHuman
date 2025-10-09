@@ -64,10 +64,26 @@ class Diffuser(pl.LightningModule):
         # ========= config controlnet model ========= #
         self.controlnet = None
         self.control_in_channels = control_in_channels
+        self.num_views = denoiser_cfg.params.get('num_views', 1)  # Get num_views from config
+        
         if control_net_config is not None:
-            # For hy3dshape, we need to create a simple ControlNet adapter
-            # that processes depth input and injects features into the main model
-            self.controlnet = self._create_depth_controlnet(control_in_channels or 1)
+            if self.num_views > 1:
+                # Use multi-view ControlNet for multiple views
+                from ..controlnet_multiview import create_multiview_depth_controlnet
+                fusion_strategy = control_net_config.get('fusion_strategy', 'attention')
+                out_channels = denoiser_cfg.params.get('additional_cond_hidden_state', 768)
+                
+                self.controlnet = create_multiview_depth_controlnet(
+                    in_channels=control_in_channels or 1,
+                    num_views=self.num_views,
+                    out_channels=out_channels,
+                    fusion_strategy=fusion_strategy
+                )
+                print(f"[INFO] Created MultiViewDepthControlNet with {self.num_views} views, fusion: {fusion_strategy}")
+            else:
+                # Use single-view ControlNet for single view
+                self.controlnet = self._create_depth_controlnet(control_in_channels or 1)
+                print(f"[INFO] Created single-view DepthControlNet")
             
         # ========= config lora model ========= #
         if lora_config is not None:
@@ -281,8 +297,26 @@ class Diffuser(pl.LightningModule):
             
             # Process depth conditioning if available
             if self.controlnet is not None and 'depth' in batch:
-                depth = batch['depth'].to(self.device)  # (B, 1, H, W)
-                depth_features = self.controlnet(depth)  # (B, hidden_dim)
+                depth = batch['depth'].to(self.device)
+                
+                if self.num_views > 1:
+                    # Multi-view depth processing: expect (B, num_views, 1, H, W)
+                    if len(depth.shape) == 5:
+                        depth_features = self.controlnet(depth)  # (B, 1, hidden_dim)
+                    else:
+                        # Fallback: if depth is (B, 1, H, W), treat as single view
+                        print(f"[WARNING] Expected multi-view depth (B, {self.num_views}, 1, H, W), got {depth.shape}")
+                        depth = depth.unsqueeze(1)  # (B, 1, 1, H, W)
+                        # Replicate to match expected number of views
+                        depth = depth.repeat(1, self.num_views, 1, 1, 1)  # (B, num_views, 1, H, W)
+                        depth_features = self.controlnet(depth)  # (B, 1, hidden_dim)
+                else:
+                    # Single-view depth processing: expect (B, 1, H, W)
+                    if len(depth.shape) == 5:
+                        # If multi-view format provided, average across views
+                        depth = depth.mean(dim=1)  # (B, 1, H, W)
+                    depth_features = self.controlnet(depth)  # (B, 1, hidden_dim)
+                
                 # Inject depth features into contexts
                 if 'additional' not in contexts:
                     contexts['additional'] = {}

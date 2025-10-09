@@ -56,7 +56,8 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         padding = True,
         padding_ratio_range=[1.15, 1.15],
         load_depth: bool = False,
-        multiview_indices: List[int] = [0, 6, 12, 18]  # 前后左右四个视图的索引 (0°, 90°, 180°, 270°)
+        multiview_indices: List[int] = [0, 6, 12, 18],  # 前后左右四个视图的索引 (0°, 90°, 180°, 270°)
+        depth_fusion_strategy: str = "multiview"  # "multiview" (keep all views), "average", "max", "weighted"
     ):
         """
         Multi-view dataset for loading front/back/left/right views with depth maps
@@ -88,6 +89,7 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         self.padding_ratio_range = padding_ratio_range
         self.load_depth = load_depth
         self.multiview_indices = multiview_indices
+        self.depth_fusion_strategy = depth_fusion_strategy
         
         rank_zero_info(f'*' * 50)
         rank_zero_info(f'Multi-View Dataset Infos:')
@@ -296,9 +298,27 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
             depth = torch.FloatTensor(depth).unsqueeze(0)  # Shape: (1, H, W)
             depths.append(depth)
         
-        # 将多个深度图沿batch维度拼接
+        # 将多个深度图沿batch维度拼接，保持多视图格式
         depths = torch.stack(depths, dim=0)  # Shape: (num_views, 1, H, W)
-        return depths
+        
+        # 根据融合策略处理深度数据
+        if self.depth_fusion_strategy == "multiview":
+            # 保持多视图格式，供MultiViewDepthControlNet处理
+            return depths  # Shape: (num_views, 1, H, W)
+        elif self.depth_fusion_strategy == "average":
+            # 平均融合多个视图
+            return depths.mean(dim=0, keepdim=True)  # Shape: (1, 1, H, W)
+        elif self.depth_fusion_strategy == "max":
+            # 取最大值融合
+            return depths.max(dim=0, keepdim=True)[0]  # Shape: (1, 1, H, W)
+        elif self.depth_fusion_strategy == "weighted":
+            # 简单的加权融合（后续可以改为学习的权重）
+            weights = torch.tensor([0.3, 0.2, 0.3, 0.2], device=depths.device).view(-1, 1, 1, 1)
+            weighted = (depths * weights[:len(depths)]).sum(dim=0, keepdim=True)
+            return weighted  # Shape: (1, 1, H, W)
+        else:
+            # 默认返回多视图格式
+            return depths
 
     def decode(self, item):
         """Same as original but load all 24 views for selection"""
@@ -339,7 +359,7 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         # Load and process multi-view depth maps if enabled
         if self.load_depth and "depth" in sample:
             depth_input = self.load_multiview_depth_maps(sample['depth'])
-            result_sample["depth"] = depth_input  # Shape: (num_views, 1, H, W)
+            result_sample["depth"] = depth_input  # Shape: (num_views, 1, H, W) - multi-view depths
         
         return result_sample
 
@@ -380,7 +400,8 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         padding = True,
         padding_ratio_range=[1.15, 1.15],
         load_depth: bool = False,
-        multiview_indices: List[int] = [0, 6, 12, 18]  # 前后左右四个视图
+        multiview_indices: List[int] = [0, 6, 12, 18],  # 前后左右四个视图
+        depth_fusion_strategy: str = "multiview"  # 深度融合策略
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -412,6 +433,7 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         self.padding_ratio_range = padding_ratio_range
         self.load_depth = load_depth
         self.multiview_indices = multiview_indices
+        self.depth_fusion_strategy = depth_fusion_strategy
         
     def train_dataloader(self):
         asl_params = {
@@ -425,7 +447,8 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "padding": self.padding,
             "padding_ratio_range": self.padding_ratio_range,
             "load_depth": self.load_depth,
-            "multiview_indices": self.multiview_indices
+            "multiview_indices": self.multiview_indices,
+            "depth_fusion_strategy": self.depth_fusion_strategy
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
@@ -449,7 +472,8 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "padding": self.padding,
             "padding_ratio_range": self.padding_ratio_range,
             "load_depth": self.load_depth,
-            "multiview_indices": self.multiview_indices
+            "multiview_indices": self.multiview_indices,
+            "depth_fusion_strategy": self.depth_fusion_strategy
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
