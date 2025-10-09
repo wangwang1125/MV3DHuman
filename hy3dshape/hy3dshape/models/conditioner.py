@@ -153,7 +153,7 @@ class DinoImageEncoderMV(DinoImageEncoder):
         view_embedding = view_embedding.unsqueeze(1).repeat(1, self.num_patches, 1)
         self.view_embed = view_embedding.unsqueeze(0)
 
-    def forward(self, image, mask=None, value_range=(-1, 1), view_idxs=None):
+    def forward(self, image, mask=None, value_range=(-1, 1), view_idxs=None, **kwargs):
         if value_range is not None:
             low, high = value_range
             image = (image - low) / (high - low)
