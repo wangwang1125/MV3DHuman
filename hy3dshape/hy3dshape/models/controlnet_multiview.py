@@ -67,7 +67,7 @@ class MultiViewDepthControlNet(nn.Module):
         
         # Multi-view fusion layer
         if fusion_strategy == "attention":
-            self.fusion_layer = MultiViewAttentionFusion(hidden_dim, num_views)
+            self.fusion_layer = MultiViewAttentionFusion(hidden_dim, num_views, out_channels)
         elif fusion_strategy == "concat":
             self.fusion_layer = nn.Linear(hidden_dim * num_views, out_channels)
         elif fusion_strategy == "weighted":
@@ -203,11 +203,12 @@ class MultiViewDepthControlNet(nn.Module):
 class MultiViewAttentionFusion(nn.Module):
     """Multi-head attention for fusing multi-view depth features"""
     
-    def __init__(self, hidden_dim: int, num_views: int, num_heads: int = 8):
+    def __init__(self, hidden_dim: int, num_views: int, out_channels: int = None, num_heads: int = 8):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
+        self.out_channels = out_channels or hidden_dim
         
         assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
         
@@ -220,6 +221,9 @@ class MultiViewAttentionFusion(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
         
+        # Final dimension projection to match expected output channels
+        self.final_proj = nn.Linear(hidden_dim, self.out_channels)
+        
         # Global token for aggregation
         self.global_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
     
@@ -228,7 +232,7 @@ class MultiViewAttentionFusion(nn.Module):
         Args:
             view_features: (B, num_views, hidden_dim)
         Returns:
-            fused_features: (B, hidden_dim)
+            fused_features: (B, out_channels)
         """
         B, num_views, hidden_dim = view_features.shape
         
@@ -258,8 +262,11 @@ class MultiViewAttentionFusion(nn.Module):
         attended = attended.transpose(1, 2).contiguous().view(B, -1, hidden_dim)  # (B, 1+num_views, hidden_dim)
         global_output = attended[:, 0]  # (B, hidden_dim) - take only global token
         
-        # Final projection
-        return self.out_proj(global_output)
+        # Intermediate projection
+        intermediate_output = self.out_proj(global_output)  # (B, hidden_dim)
+        
+        # Final projection to match expected output channels
+        return self.final_proj(intermediate_output)  # (B, out_channels)
 
 
 class WeightedFusion(nn.Module):
