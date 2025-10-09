@@ -4,7 +4,7 @@
 # This script trains the model with depth conditioning via ControlNet and LoRA
 
 export CUDA_VISIBLE_DEVICES=0
-export config=configs/hunyuandit-depth-mv-lora-flowmatching-dinol518-bf16-lr1e5-4096.yaml
+export config=configs/hunyuandit-multiview-depth-lora-flowmatching-dinol518-bf16-lr1e5-4096.yaml
 export output_dir=output_folder/dit/depth_lora_finetuning
 
 echo "Starting Depth LoRA fine-tuning..."
