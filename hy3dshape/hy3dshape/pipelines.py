@@ -494,6 +494,27 @@ class Hunyuan3DDiTPipeline:
             }
             return outputs
             
+        # Handle dictionary input for multi-view images (MVImageProcessorV2)
+        if isinstance(image, dict):
+            # For multi-view input, pass the entire dictionary to the image processor
+            return self.image_processor(image)
+        
+        # Handle list of dictionaries for multi-view images
+        if isinstance(image, list) and len(image) > 0 and isinstance(image[0], dict):
+            outputs = []
+            for img_dict in image:
+                output = self.image_processor(img_dict)
+                outputs.append(output)
+            
+            cond_input = {k: [] for k in outputs[0].keys()}
+            for output in outputs:
+                for key, value in output.items():
+                    cond_input[key].append(value)
+            for key, value in cond_input.items():
+                if isinstance(value[0], torch.Tensor):
+                    cond_input[key] = torch.cat(value, dim=0)
+            return cond_input
+            
         if isinstance(image, str) and not os.path.exists(image):
             raise FileNotFoundError(f"Couldn't find image at path {image}")
 
