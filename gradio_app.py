@@ -1291,21 +1291,31 @@ if __name__ == '__main__':
                         print("❌ checkpoint格式无效，缺少state_dict")
                 
                 elif os.path.isdir(args.depth_lora_path):
-                    # 标准的PEFT格式目录，按照test_depth_inference.py的方式加载
+                    # 标准的PEFT格式目录
                     print("检测到PEFT目录格式，使用标准LoRA加载方式...")
                     
                     success_count = 0
                     
                     # 加载主DiT模型的LoRA权重
-                    if hasattr(i23d_worker, 'model') and hasattr(i23d_worker.model, 'model'):
+                    # 注意：Pipeline.model 就是 HunYuanDiTPlain 实例，不需要再 .model
+                    if hasattr(i23d_worker, 'model'):
                         try:
                             print("正在加载LoRA权重到主DiT模型...")
-                            i23d_worker.model.model = PeftModel.from_pretrained(
-                                i23d_worker.model.model, args.depth_lora_path)
+                            print(f"  模型类型: {type(i23d_worker.model)}")
+                            print(f"  LoRA路径: {args.depth_lora_path}")
+                            
+                            # 直接对 pipeline.model 应用 LoRA
+                            i23d_worker.model = PeftModel.from_pretrained(
+                                i23d_worker.model, args.depth_lora_path)
+                            
                             print("✅ 主DiT模型LoRA权重加载成功")
                             success_count += 1
                         except Exception as e:
                             print(f"❌ 主DiT模型LoRA权重加载失败: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print("❌ Pipeline没有model属性")
                     
                     if success_count > 0:
                         print(f"✅ 总共成功加载 {success_count} 个组件的LoRA权重")

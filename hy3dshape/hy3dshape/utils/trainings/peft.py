@@ -104,6 +104,13 @@ class PeftSaveCallback(Callback):
         save_path = os.path.join(self.save_dir, f"epoch_{trainer.current_epoch}")
         self.peft_model.save_pretrained(save_path)
         print(f"[PeftSaveCallback] Saved LoRA weights to {save_path}")
+        
+        # 同时保存ControlNet权重（如果存在）
+        if hasattr(pl_module, 'controlnet') and pl_module.controlnet is not None:
+            import torch
+            controlnet_path = os.path.join(save_path, 'controlnet.pth')
+            torch.save(pl_module.controlnet.state_dict(), controlnet_path)
+            print(f"[PeftSaveCallback] Saved ControlNet weights to {controlnet_path}")
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if self.peft_model is None:
@@ -116,3 +123,10 @@ class PeftSaveCallback(Callback):
                 save_path = os.path.join(self.save_dir, f"step_{global_step}")
                 self.peft_model.save_pretrained(save_path)
                 print(f"[PeftSaveCallback] Saved LoRA weights to {save_path}")
+                
+                # 同时保存ControlNet权重（如果存在）
+                if hasattr(pl_module, 'controlnet') and pl_module.controlnet is not None:
+                    import torch
+                    controlnet_path = os.path.join(save_path, 'controlnet.pth')
+                    torch.save(pl_module.controlnet.state_dict(), controlnet_path)
+                    print(f"[PeftSaveCallback] Saved ControlNet weights to {controlnet_path}")

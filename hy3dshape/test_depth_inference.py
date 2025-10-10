@@ -66,9 +66,18 @@ def test_depth_inference():
     if os.path.exists(lora_checkpoint_path):
         print(f"Loading LoRA checkpoint from: {lora_checkpoint_path}")
         from peft import PeftModel
+        # 只对主DiT模型应用LoRA，ControlNet使用全参数训练，不需要加载LoRA
         model.model = PeftModel.from_pretrained(model.model, lora_checkpoint_path)
+        print("✅ LoRA weights loaded successfully for DiT model")
+        
+        # ControlNet不使用LoRA，如果有保存的ControlNet权重，需要单独加载
         if model.controlnet is not None:
-            model.controlnet = PeftModel.from_pretrained(model.controlnet, lora_checkpoint_path)
+            controlnet_checkpoint = os.path.join(os.path.dirname(lora_checkpoint_path), 'controlnet.pth')
+            if os.path.exists(controlnet_checkpoint):
+                model.controlnet.load_state_dict(torch.load(controlnet_checkpoint))
+                print("✅ ControlNet weights loaded successfully")
+            else:
+                print("⚠️  ControlNet checkpoint not found, using initialized weights")
     else:
         print(f"LoRA checkpoint not found at: {lora_checkpoint_path}")
         print("Using base model without LoRA fine-tuning")
