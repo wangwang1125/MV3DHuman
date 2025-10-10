@@ -1413,6 +1413,12 @@ if __name__ == '__main__':
             if args.depth_lora_path:
                 print(f"深度 LoRA 路径不存在: {args.depth_lora_path}")
             print("使用基础深度条件模型（未加载LoRA权重）")
+        
+        # 无论是否加载LoRA，在多视图深度模式下都要设置正确的image processor
+        if MULTIVIEW_DEPTH_MODE and hasattr(i23d_worker, 'image_processor'):
+            from hy3dshape.preprocessors import MVImageProcessorV2
+            i23d_worker.image_processor = MVImageProcessorV2(size=518)
+            print("✅ 已设置MVImageProcessorV2用于多视图深度处理")
     else:
         print("正在加载标准RGB模型...")
         i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
