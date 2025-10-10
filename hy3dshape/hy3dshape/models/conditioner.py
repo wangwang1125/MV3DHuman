@@ -192,9 +192,14 @@ class DinoImageEncoderMV(DinoImageEncoder):
     def unconditional_embedding(self, batch_size, view_idxs=None, **kwargs):
         device = next(self.model.parameters()).device
         dtype = next(self.model.parameters()).dtype
+        # 如果 view_idxs 为 None，使用默认的 view_num
+        if view_idxs is None:
+            num_views = self.view_num
+        else:
+            num_views = len(view_idxs[0])
         zero = torch.zeros(
             batch_size,
-            self.num_patches * len(view_idxs[0]),
+            self.num_patches * num_views,
             self.model.config.hidden_size,
             device=device,
             dtype=dtype,

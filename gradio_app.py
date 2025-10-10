@@ -257,6 +257,41 @@ def load_depth_from_16bit_png(depth_file_path, target_size=518):
         raise gr.Error(f"无法处理深度图文件: {str(e)}")
 
 
+def load_multiview_depths(depth_files_dict, target_size=518):
+    """
+    加载多视图深度图（适用于多视图深度训练模式）
+    
+    Args:
+        depth_files_dict: 包含各个视图深度图文件的字典 {'front': file, 'right': file, 'back': file, 'left': file}
+        target_size: 目标图像尺寸
+    
+    Returns:
+        torch.Tensor: 多视图深度图张量，形状为 (num_views, 1, H, W)
+    """
+    # 按照训练代码中的顺序：front(0), right(1), back(2), left(3)
+    view_order = ['front', 'right', 'back', 'left']
+    depth_tensors = []
+    
+    for view_name in view_order:
+        if view_name in depth_files_dict and depth_files_dict[view_name] is not None:
+            depth_file = depth_files_dict[view_name]
+            file_path = depth_file.name if hasattr(depth_file, 'name') else depth_file
+            
+            # 加载单个深度图
+            depth_tensor = load_depth_from_16bit_png(file_path, target_size)  # (1, 1, H, W)
+            depth_tensors.append(depth_tensor.squeeze(0))  # (1, H, W)
+        else:
+            # 如果某个视图没有深度图，创建零深度图作为占位符
+            print(f"警告：视图 {view_name} 没有深度图，使用零深度图")
+            depth_tensors.append(torch.zeros(1, target_size, target_size))
+    
+    # 堆叠所有视图的深度图
+    multiview_depth = torch.stack(depth_tensors, dim=0)  # (num_views, 1, H, W)
+    print(f"多视图深度图张量形状: {multiview_depth.shape}")
+    
+    return multiview_depth
+
+
 def validate_depth_file(file_path):
     """
     验证上传的深度图文件是否有效
@@ -325,11 +360,16 @@ height="{height}" width="100%" frameborder="0"></iframe>'
 def _gen_shape(
     caption=None,
     image=None,
-    depth_file=None,  # 新增深度图文件参数
+    depth_file=None,  # 单视图深度图文件参数
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
     mv_image_right=None,
+    # 多视图深度图参数
+    mv_depth_front=None,
+    mv_depth_back=None,
+    mv_depth_left=None,
+    mv_depth_right=None,
     steps=50,
     guidance_scale=7.5,
     seed=1234,
@@ -342,7 +382,7 @@ def _gen_shape(
         raise gr.Error("请提供图像或文本提示。")
     
     # 深度模式验证
-    if DEPTH_MODE:
+    if DEPTH_MODE and not MV_MODE:
         if image is None:
             raise gr.Error("深度模式下必须提供RGB图像。")
         if depth_file is None:
@@ -361,6 +401,12 @@ def _gen_shape(
             image['left'] = mv_image_left
         if mv_image_right:
             image['right'] = mv_image_right
+        
+        # 如果是多视图深度模式，也要验证深度图
+        if DEPTH_MODE and MULTIVIEW_DEPTH_MODE:
+            depth_provided = any([mv_depth_front, mv_depth_back, mv_depth_left, mv_depth_right])
+            if not depth_provided:
+                raise gr.Error("多视图深度模式下至少需要提供一个视图的深度图。")
 
     seed = int(randomize_seed_fn(seed, randomize_seed))
 
@@ -380,6 +426,7 @@ def _gen_shape(
             'octree_resolution': octree_resolution,
             'check_box_rembg': check_box_rembg,
             'num_chunks': num_chunks,
+            'mode': 'multiview_depth' if (MV_MODE and MULTIVIEW_DEPTH_MODE) else ('depth' if DEPTH_MODE else 'rgb'),
         }
     }
     time_meta = {}
@@ -411,19 +458,48 @@ def _gen_shape(
     # remove disk io to make responding faster, uncomment at your will.
     # image.save(os.path.join(save_folder, 'rembg.png'))
 
-    # 处理深度图（如果在深度模式下）
+    # 处理深度图
     depth_tensor = None
-    if DEPTH_MODE and depth_file is not None:
+    
+    # 多视图深度模式
+    if MV_MODE and MULTIVIEW_DEPTH_MODE and DEPTH_MODE:
+        start_depth_time = time.time()
+        try:
+            # 收集所有视图的深度图
+            depth_files_dict = {}
+            if mv_depth_front is not None:
+                depth_files_dict['front'] = mv_depth_front
+            if mv_depth_right is not None:
+                depth_files_dict['right'] = mv_depth_right
+            if mv_depth_back is not None:
+                depth_files_dict['back'] = mv_depth_back
+            if mv_depth_left is not None:
+                depth_files_dict['left'] = mv_depth_left
+            
+            # 加载多视图深度图
+            depth_tensor = load_multiview_depths(depth_files_dict, target_size=518)
+            
+            if args.device == 'cuda':
+                depth_tensor = depth_tensor.cuda()
+            
+            time_meta['multiview_depth processing'] = time.time() - start_depth_time
+            print(f"多视图深度图处理完成，形状: {depth_tensor.shape}")
+        except Exception as e:
+            print(f"多视图深度图处理失败: {e}")
+            raise gr.Error(f"多视图深度图处理失败: {str(e)}")
+    
+    # 单视图深度模式
+    elif DEPTH_MODE and depth_file is not None and not MV_MODE:
         start_depth_time = time.time()
         try:
             depth_tensor = load_depth_from_16bit_png(depth_file.name if hasattr(depth_file, 'name') else depth_file)
             if args.device == 'cuda':
                 depth_tensor = depth_tensor.cuda()
             time_meta['depth processing'] = time.time() - start_depth_time
-            print(f"深度图处理完成，形状: {depth_tensor.shape}")
+            print(f"单视图深度图处理完成，形状: {depth_tensor.shape}")
         except Exception as e:
-            print(f"深度图处理失败: {e}")
-            raise gr.Error(f"深度图处理失败: {str(e)}")
+            print(f"单视图深度图处理失败: {e}")
+            raise gr.Error(f"单视图深度图处理失败: {str(e)}")
 
     # image to white model
     start_time = time.time()
@@ -445,7 +521,8 @@ def _gen_shape(
     # 如果有深度图，添加到输入中
     if depth_tensor is not None:
         model_inputs['depth'] = depth_tensor
-        print("深度图已添加到模型输入")
+        mode_str = "多视图" if (MV_MODE and MULTIVIEW_DEPTH_MODE) else "单视图"
+        print(f"{mode_str}深度图已添加到模型输入")
     
     outputs = i23d_worker(**model_inputs)
     time_meta['shape generation'] = time.time() - start_time
@@ -466,11 +543,16 @@ def _gen_shape(
 def generation_all(
     caption=None,
     image=None,
-    depth_file=None,  # 新增深度图文件参数
+    depth_file=None,  # 单视图深度图文件参数
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
     mv_image_right=None,
+    # 多视图深度图参数
+    mv_depth_front=None,
+    mv_depth_back=None,
+    mv_depth_left=None,
+    mv_depth_right=None,
     steps=50,
     guidance_scale=7.5,
     seed=1234,
@@ -483,11 +565,16 @@ def generation_all(
     mesh, image, save_folder, stats, seed = _gen_shape(
         caption,
         image,
-        depth_file=depth_file,  # 传递深度图参数
+        depth_file=depth_file,  # 传递单视图深度图参数
         mv_image_front=mv_image_front,
         mv_image_back=mv_image_back,
         mv_image_left=mv_image_left,
         mv_image_right=mv_image_right,
+        # 传递多视图深度图参数
+        mv_depth_front=mv_depth_front,
+        mv_depth_back=mv_depth_back,
+        mv_depth_left=mv_depth_left,
+        mv_depth_right=mv_depth_right,
         steps=steps,
         guidance_scale=guidance_scale,
         seed=seed,
@@ -550,11 +637,16 @@ def generation_all(
 def shape_generation(
     caption=None,
     image=None,
-    depth_file=None,  # 新增深度图文件参数
+    depth_file=None,  # 单视图深度图文件参数
     mv_image_front=None,
     mv_image_back=None,
     mv_image_left=None,
     mv_image_right=None,
+    # 多视图深度图参数
+    mv_depth_front=None,
+    mv_depth_back=None,
+    mv_depth_left=None,
+    mv_depth_right=None,
     steps=50,
     guidance_scale=7.5,
     seed=1234,
@@ -567,11 +659,16 @@ def shape_generation(
     mesh, image, save_folder, stats, seed = _gen_shape(
         caption,
         image,
-        depth_file=depth_file,  # 传递深度图参数
+        depth_file=depth_file,  # 传递单视图深度图参数
         mv_image_front=mv_image_front,
         mv_image_back=mv_image_back,
         mv_image_left=mv_image_left,
         mv_image_right=mv_image_right,
+        # 传递多视图深度图参数
+        mv_depth_front=mv_depth_front,
+        mv_depth_back=mv_depth_back,
+        mv_depth_left=mv_depth_left,
+        mv_depth_right=mv_depth_right,
         steps=steps,
         guidance_scale=guidance_scale,
         seed=seed,
@@ -597,7 +694,7 @@ def shape_generation(
 
 def build_app():
     title = 'Hunyuan3D-2: High Resolution Textured 3D Assets Generation'
-    if MV_MODE:
+    if MV_MODE and not MULTIVIEW_DEPTH_MODE:
         title = 'Hunyuan3D-2mv: Image to 3D Generation with 1-4 Views'
     if 'mini' in args.subfolder:
         title = 'Hunyuan3D-2mini: Strong 0.6B Image to Shape Generator'
@@ -608,8 +705,12 @@ def build_app():
         title = title.replace(':', '-Turbo: Fast ')
 
     # 根据模式调整标题
-    if DEPTH_MODE:
-        title += " (深度条件模式)"
+    if MULTIVIEW_DEPTH_MODE:
+        title += " (多视图深度条件模式)"
+    elif DEPTH_MODE:
+        title += " (单视图深度条件模式)"
+    elif MV_MODE:
+        title += " (多视图模式)"
     
     title_html = f"""
     <div style="font-size: 2em; font-weight: bold; text-align: center; margin-bottom: 5px">
@@ -699,6 +800,7 @@ def build_app():
 #                                             info='Example: A 3D model of a cute cat, white background')
                     with gr.Tab('MultiView Prompt', visible=MV_MODE) as tab_mv:
                         # gr.Label('Please upload at least one front image.')
+                        gr.Markdown("### RGB 图像")
                         with gr.Row():
                             mv_image_front = gr.Image(label='Front', type='pil', image_mode='RGBA', height=140,
                                                       min_width=100, elem_classes='mv-image')
@@ -709,6 +811,53 @@ def build_app():
                                                      min_width=100, elem_classes='mv-image')
                             mv_image_right = gr.Image(label='Right', type='pil', image_mode='RGBA', height=140,
                                                       min_width=100, elem_classes='mv-image')
+                        
+                        # 如果启用多视图深度模式，添加深度图上传组件
+                        if MULTIVIEW_DEPTH_MODE and DEPTH_MODE:
+                            gr.Markdown("### 深度图 (16位PNG)")
+                            with gr.Row():
+                                mv_depth_front = gr.File(
+                                    label="Front Depth",
+                                    file_types=[".png", ".tiff", ".tif"],
+                                    type="filepath",
+                                    interactive=True
+                                )
+                                mv_depth_back = gr.File(
+                                    label="Back Depth",
+                                    file_types=[".png", ".tiff", ".tif"],
+                                    type="filepath",
+                                    interactive=True
+                                )
+                            with gr.Row():
+                                mv_depth_left = gr.File(
+                                    label="Left Depth",
+                                    file_types=[".png", ".tiff", ".tif"],
+                                    type="filepath",
+                                    interactive=True
+                                )
+                                mv_depth_right = gr.File(
+                                    label="Right Depth",
+                                    file_types=[".png", ".tiff", ".tif"],
+                                    type="filepath",
+                                    interactive=True
+                                )
+                            gr.Markdown(
+                                "📋 **多视图深度图要求:**\n"
+                                "- 格式: 16位PNG、TIFF或TIF文件\n" 
+                                "- 尺寸: 建议与RGB图像相同\n"
+                                "- 视图顺序: Front(0°) → Right(90°) → Back(180°) → Left(270°)\n"
+                                "- 至少提供一个视图的深度图\n\n"
+                                "💡 **使用提示:**\n"
+                                "1. 按顺序上传各视图的RGB图像\n"
+                                "2. 上传对应视图的深度图文件\n" 
+                                "3. 点击生成按钮开始处理"
+                            )
+                        else:
+                            # 创建占位符状态变量
+                            mv_depth_front = gr.State(None)
+                            mv_depth_back = gr.State(None)
+                            mv_depth_left = gr.State(None)
+                            mv_depth_right = gr.State(None)
 
                 with gr.Row():
                     btn = gr.Button(value='Gen Shape', variant='primary', min_width=100)
@@ -808,11 +957,16 @@ Fast for very complex cases, Standard seldom use.',
             inputs=[
                 caption,
                 image,
-                depth_file,  # 添加深度图文件参数
+                depth_file,  # 单视图深度图文件参数
                 mv_image_front,
                 mv_image_back,
                 mv_image_left,
                 mv_image_right,
+                # 多视图深度图参数
+                mv_depth_front,
+                mv_depth_back,
+                mv_depth_left,
+                mv_depth_right,
                 num_steps,
                 cfg_scale,
                 seed,
@@ -836,11 +990,16 @@ Fast for very complex cases, Standard seldom use.',
             inputs=[
                 caption,
                 image,
-                depth_file,  # 添加深度图文件参数
+                depth_file,  # 单视图深度图文件参数
                 mv_image_front,
                 mv_image_back,
                 mv_image_left,
                 mv_image_right,
+                # 多视图深度图参数
+                mv_depth_front,
+                mv_depth_back,
+                mv_depth_left,
+                mv_depth_right,
                 num_steps,
                 cfg_scale,
                 seed,
@@ -948,6 +1107,7 @@ if __name__ == '__main__':
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--low_vram_mode', action='store_true')
     parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
+    parser.add_argument('--enable_multiview_depth', action='store_true', help='Enable multi-view depth-conditioned model')
     parser.add_argument('--depth_lora_path', type=str, default="./hy3dshape/output_folder/dit/depth_lora_checkpoints/ckpt/ckpt-step=00000200.ckpt", help='Path to depth LoRA checkpoint')
     args = parser.parse_args()
     args.enable_flashvdm = False
@@ -956,9 +1116,10 @@ if __name__ == '__main__':
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    MV_MODE = 'mv' in args.model_path
+    MV_MODE = 'mv' in args.model_path or args.enable_multiview_depth
     TURBO_MODE = 'turbo' in args.subfolder
-    DEPTH_MODE = args.enable_depth  # 标记是否使用深度图模式
+    DEPTH_MODE = args.enable_depth or args.enable_multiview_depth  # 标记是否使用深度图模式
+    MULTIVIEW_DEPTH_MODE = args.enable_multiview_depth  # 标记是否使用多视图深度图模式
 
     HTML_HEIGHT = 690 if MV_MODE else 650
     HTML_WIDTH = 500

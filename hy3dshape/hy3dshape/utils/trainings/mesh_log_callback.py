@@ -247,11 +247,17 @@ class ImageConditionalASLDiffuserLogger(Callback):
         """
 
         Args:
-            image (np.ndarray): [3, h, w]
+            image (np.ndarray): [3, h, w] or [num_views, 3, h, w]
 
         Returns:
-            image (np.ndarray): [h, w, 3], np.uint8, [0, 255].
+            image (np.ndarray): [h, w, 3], np.uint8, [0, 255] or grid of multi-view images.
         """
+        # 检查是否为多视图图像
+        if len(image.shape) == 4:
+            # 多视图图像: (num_views, C, H, W)
+            # 只取第一个视图进行可视化
+            image = image[0]
+        
         # image = np.transpose(image, (0, 2, 3, 1))
         image = np.transpose(image, (1, 2, 0))
 

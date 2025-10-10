@@ -75,9 +75,22 @@ python gradio_app.py --enable_depth --depth_lora_path /path/to/your/depth_lora_c
 5. **张量转换**: 转换为 (1,1,H,W) 张量格式
 
 ### LoRA权重加载
-- 自动搜索训练产生的LoRA检查点
-- 按步数排序，加载最新的权重
-- 如果加载失败，回退到基础模型
+- **自动发现**: 自动搜索训练产生的LoRA检查点
+- **格式支持**: 支持PyTorch Lightning (.ckpt) 和 HuggingFace PEFT 目录格式
+- **智能加载**: 按步数排序，加载最新的权重
+- **双重应用**: 同时加载到主DiT模型和ControlNet（如果存在）
+- **回退机制**: 如果加载失败，回退到基础模型
+
+#### 支持的权重格式
+1. **Lightning Checkpoint (.ckpt)**: 
+   - 训练过程中保存的完整检查点
+   - 自动提取模型状态字典
+   - 路径示例: `./hy3dshape/output_folder/dit/depth_lora_finetuning/ckpt/ckpt-step=00000200.ckpt`
+
+2. **PEFT目录格式**: 
+   - 标准的HuggingFace PEFT适配器格式
+   - 包含 `adapter_config.json` 和 `adapter_model.bin`
+   - 路径示例: `./hy3dshape/output_folder/dit/depth_lora_checkpoints/step_1000/`
 
 ### 模型架构
 - **ControlNet**: 提取深度图特征
@@ -93,10 +106,12 @@ python gradio_app.py --enable_depth --depth_lora_path /path/to/your/depth_lora_c
    - 检查文件是否损坏
    - 尝试用其他图像查看器打开验证
 
-2. **模型加载失败**
-   - 检查LoRA权重路径是否正确
-   - 确保权重文件完整
-   - 查看终端输出的详细错误信息
+2. **LoRA权重加载失败**
+   - **路径问题**: 确保权重路径正确且文件存在
+   - **格式问题**: 检查是`.ckpt`文件还是PEFT目录格式
+   - **权重不匹配**: 确保LoRA权重与基础模型兼容
+   - **查看详细日志**: 启动时会显示pipeline结构信息，有助于调试
+   - **回退模式**: 如果LoRA加载失败，会自动使用基础模型
 
 3. **生成结果不理想**
    - 检查RGB图像和深度图是否匹配

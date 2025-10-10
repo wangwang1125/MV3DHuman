@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="1600" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font-family: Arial, sans-serif; font-size: 24px; font-weight: bold; fill: #2c3e50; }
+      .subtitle { font-family: Arial, sans-serif; font-size: 18px; font-weight: bold; fill: #34495e; }
+      .text { font-family: Arial, sans-serif; font-size: 14px; fill: #2c3e50; }
+      .small-text { font-family: Arial, sans-serif; font-size: 12px; fill: #7f8c8d; }
+      .code-text { font-family: 'Courier New', monospace; font-size: 11px; fill: #e74c3c; }
+      .input-box { fill: #e8f5e8; stroke: #27ae60; stroke-width: 2; }
+      .process-box { fill: #e3f2fd; stroke: #2196f3; stroke-width: 2; }
+      .transform-box { fill: #fff3e0; stroke: #ff9800; stroke-width: 2; }
+      .output-box { fill: #f3e5f5; stroke: #9c27b0; stroke-width: 2; }
+      .decision-box { fill: #fff8e1; stroke: #ffc107; stroke-width: 2; }
+      .arrow { stroke: #34495e; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .data-flow { stroke: #e74c3c; stroke-width: 2; fill: none; marker-end: url(#arrowhead-red); stroke-dasharray: 5,5; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#34495e"/>
+    </marker>
+    <marker id="arrowhead-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#e74c3c"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="700" y="30" text-anchor="middle" class="title">DinoImageEncoderMV 多视角RGB处理流程</text>
+  <text x="700" y="55" text-anchor="middle" class="subtitle">Multi-View RGB Processing Pipeline</text>
+
+  <!-- Input Stage -->
+  <rect x="50" y="100" width="300" height="120" class="input-box" rx="10"/>
+  <text x="200" y="125" text-anchor="middle" class="subtitle">输入数据</text>
+  <text x="70" y="150" class="text">• 多视角RGB图像</text>
+  <text x="70" y="170" class="text">• 形状: (bs, num_views, 3, H, W)</text>
+  <text x="70" y="190" class="text">• 值域: value_range (默认 -1~1)</text>
+  <text x="70" y="210" class="text">• 可选: view_idxs 视角索引</text>
+
+  <!-- Initialization Stage -->
+  <rect x="400" y="100" width="350" height="120" class="process-box" rx="10"/>
+  <text x="575" y="125" text-anchor="middle" class="subtitle">初始化阶段</text>
+  <text x="420" y="150" class="text">• view_num: 默认4个视角</text>
+  <text x="420" y="170" class="text">• 生成视角位置编码 (sincos)</text>
+  <text x="420" y="190" class="code-text">view_embed = get_1d_sincos_pos_embed()</text>
+  <text x="420" y="210" class="text">• 形状: (1, view_num, num_patches, hidden_size)</text>
+
+  <!-- Data Preprocessing -->
+  <rect x="800" y="100" width="300" height="120" class="transform-box" rx="10"/>
+  <text x="950" y="125" text-anchor="middle" class="subtitle">数据预处理</text>
+  <text x="820" y="150" class="text">• 值域归一化到 [0,1]</text>
+  <text x="820" y="170" class="code-text">(image - low) / (high - low)</text>
+  <text x="820" y="190" class="text">• 设备和数据类型转换</text>
+  <text x="820" y="210" class="text">• 获取实际视角数量</text>
+
+  <!-- Shape Transformation -->
+  <rect x="200" y="280" width="400" height="100" class="transform-box" rx="10"/>
+  <text x="400" y="305" text-anchor="middle" class="subtitle">形状变换</text>
+  <text x="220" y="330" class="text">• 输入: (bs, num_views, 3, H, W)</text>
+  <text x="220" y="350" class="text">• 重塑为: (bs * num_views, 3, H, W)</text>
+  <text x="220" y="370" class="code-text">image = image.view(bs * num_views, 3, H, W)</text>
+
+  <!-- Image Transform -->
+  <rect x="650" y="280" width="400" height="100" class="transform-box" rx="10"/>
+  <text x="850" y="305" text-anchor="middle" class="subtitle">图像变换</text>
+  <text x="670" y="330" class="text">• Resize到224x224</text>
+  <text x="670" y="350" class="text">• CenterCrop裁剪</text>
+  <text x="670" y="370" class="text">• 标准化 (mean=[0.485,0.456,0.406])</text>
+
+  <!-- DINO Model Processing -->
+  <rect x="300" y="420" width="500" height="120" class="process-box" rx="10"/>
+  <text x="550" y="445" text-anchor="middle" class="subtitle">DINO模型处理</text>
+  <text x="320" y="470" class="text">• 使用预训练的Dinov2Model</text>
+  <text x="320" y="490" class="text">• 输入: (bs * num_views, 3, 224, 224)</text>
+  <text x="320" y="510" class="text">• 输出: last_hidden_state</text>
+  <text x="320" y="530" class="text">• 形状: (bs * num_views, num_patches, hidden_size)</text>
+
+  <!-- Reshape Back -->
+  <rect x="100" y="580" width="350" height="100" class="transform-box" rx="10"/>
+  <text x="275" y="605" text-anchor="middle" class="subtitle">形状恢复</text>
+  <text x="120" y="630" class="text">• 恢复多视角维度</text>
+  <text x="120" y="650" class="text">• (bs * num_views, ...) → (bs, num_views, ...)</text>
+  <text x="120" y="670" class="code-text">last_hidden_state.view(bs, num_views, ...)</text>
+
+  <!-- View Embedding Processing -->
+  <rect x="500" y="580" width="400" height="100" class="process-box" rx="10"/>
+  <text x="700" y="605" text-anchor="middle" class="subtitle">视角嵌入处理</text>
+  <text x="520" y="630" class="text">• 获取预计算的view_embedding</text>
+  <text x="520" y="650" class="text">• 设备和数据类型匹配</text>
+  <text x="520" y="670" class="text">• 处理自定义view_idxs (如果提供)</text>
+
+  <!-- Dynamic View Handling -->
+  <rect x="950" y="580" width="350" height="100" class="decision-box" rx="10"/>
+  <text x="1125" y="605" text-anchor="middle" class="subtitle">动态视角处理</text>
+  <text x="970" y="630" class="text">• 检查 num_views != self.view_num</text>
+  <text x="970" y="650" class="text">• 如果不同，截断view_embedding</text>
+  <text x="970" y="670" class="code-text">view_embedding[:, :num_views, ...]</text>
+
+  <!-- View Index Processing -->
+  <rect x="200" y="720" width="500" height="120" class="decision-box" rx="10"/>
+  <text x="450" y="745" text-anchor="middle" class="subtitle">视角索引处理 (可选)</text>
+  <text x="220" y="770" class="text">• 如果提供view_idxs:</text>
+  <text x="240" y="790" class="text">- 为每个batch样本选择对应视角</text>
+  <text x="240" y="810" class="text">- 重新组合view_embedding</text>
+  <text x="240" y="830" class="code-text">view_embeddings.append(self.view_embed[:, view_idx, ...])</text>
+
+  <!-- Feature Fusion -->
+  <rect x="750" y="720" width="400" height="120" class="process-box" rx="10"/>
+  <text x="950" y="745" text-anchor="middle" class="subtitle">特征融合</text>
+  <text x="770" y="770" class="text">• 将视角嵌入添加到图像特征</text>
+  <text x="770" y="790" class="code-text">last_hidden_state + view_embedding</text>
+  <text x="770" y="810" class="text">• 形状保持不变</text>
+  <text x="770" y="830" class="text">• (bs, num_views, num_patches, hidden_size)</text>
+
+  <!-- Final Reshape -->
+  <rect x="300" y="880" width="500" height="100" class="output-box" rx="10"/>
+  <text x="550" y="905" text-anchor="middle" class="subtitle">最终输出重塑</text>
+  <text x="320" y="930" class="text">• 将多视角特征展平为序列</text>
+  <text x="320" y="950" class="text">• (bs, num_views, num_patches, hidden_size)</text>
+  <text x="320" y="970" class="text">• → (bs, num_views * num_patches, hidden_size)</text>
+
+  <!-- Output -->
+  <rect x="400" y="1020" width="400" height="100" class="output-box" rx="10"/>
+  <text x="600" y="1045" text-anchor="middle" class="subtitle">输出结果</text>
+  <text x="420" y="1070" class="text">• 融合的多视角RGB特征</text>
+  <text x="420" y="1090" class="text">• 形状: (bs, num_views * num_patches, hidden_size)</text>
+  <text x="420" y="1110" class="text">• 包含位置和视角信息的丰富表示</text>
+
+  <!-- Technical Details Box -->
+  <rect x="50" y="1160" width="600" height="200" class="process-box" rx="10"/>
+  <text x="350" y="1185" text-anchor="middle" class="subtitle">技术细节</text>
+  <text x="70" y="1210" class="text">关键参数:</text>
+  <text x="90" y="1230" class="small-text">• image_size: 224 (输入图像尺寸)</text>
+  <text x="90" y="1250" class="small-text">• view_num: 4 (默认视角数量)</text>
+  <text x="90" y="1270" class="small-text">• num_patches: (224/14)² = 256 (图像块数量)</text>
+  <text x="90" y="1290" class="small-text">• hidden_size: 模型配置的隐藏维度</text>
+  <text x="70" y="1320" class="text">数据流转:</text>
+  <text x="90" y="1340" class="small-text">• 支持1-N个视角的动态处理</text>
+
+  <!-- Advantages Box -->
+  <rect x="700" y="1160" width="600" height="200" class="output-box" rx="10"/>
+  <text x="1000" y="1185" text-anchor="middle" class="subtitle">系统优势</text>
+  <text x="720" y="1210" class="text">灵活性:</text>
+  <text x="740" y="1230" class="small-text">• 支持动态视角数量 (1-N views)</text>
+  <text x="740" y="1250" class="small-text">• 自动截断位置编码适应不同视角数</text>
+  <text x="720" y="1280" class="text">兼容性:</text>
+  <text x="740" y="1300" class="small-text">• 与现有训练模型完全兼容</text>
+  <text x="740" y="1320" class="small-text">• 支持自定义视角索引</text>
+  <text x="720" y="1350" class="text">性能:</text>
+  <text x="740" y="1370" class="small-text">• 批量处理多视角图像</text>
+
+  <!-- Flow Arrows -->
+  <line x1="350" y1="160" x2="400" y2="160" class="arrow"/>
+  <line x1="750" y1="160" x2="800" y2="160" class="arrow"/>
+  <line x1="200" y1="220" x2="200" y2="280" class="arrow"/>
+  <line x1="950" y1="220" x2="950" y2="280" class="arrow"/>
+  <line x1="400" y1="380" x2="400" y2="420" class="arrow"/>
+  <line x1="850" y1="380" x2="850" y2="420" class="arrow"/>
+  <line x1="550" y1="540" x2="275" y2="580" class="arrow"/>
+  <line x1="550" y1="540" x2="700" y2="580" class="arrow"/>
+  <line x1="550" y1="540" x2="1125" y2="580" class="arrow"/>
+  <line x1="275" y1="680" x2="450" y2="720" class="arrow"/>
+  <line x1="700" y1="680" x2="950" y2="720" class="arrow"/>
+  <line x1="1125" y1="680" x2="950" y2="720" class="arrow"/>
+  <line x1="450" y1="840" x2="550" y2="880" class="arrow"/>
+  <line x1="950" y1="840" x2="550" y2="880" class="arrow"/>
+  <line x1="550" y1="980" x2="600" y2="1020" class="arrow"/>
+
+  <!-- Data Flow Lines -->
+  <line x1="600" y1="380" x2="850" y2="380" class="data-flow"/>
+  <line x1="275" y1="680" x2="700" y2="680" class="data-flow"/>
+
+  <!-- Legend -->
+  <rect x="50" y="1400" width="1250" height="150" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1" rx="5"/>
+  <text x="675" y="1425" text-anchor="middle" class="subtitle">图例说明</text>
+  
+  <rect x="80" y="1440" width="20" height="15" class="input-box"/>
+  <text x="110" y="1452" class="small-text">输入数据</text>
+  
+  <rect x="200" y="1440" width="20" height="15" class="process-box"/>
+  <text x="230" y="1452" class="small-text">处理步骤</text>
+  
+  <rect x="320" y="1440" width="20" height="15" class="transform-box"/>
+  <text x="350" y="1452" class="small-text">数据变换</text>
+  
+  <rect x="450" y="1440" width="20" height="15" class="decision-box"/>
+  <text x="480" y="1452" class="small-text">条件判断</text>
+  
+  <rect x="580" y="1440" width="20" height="15" class="output-box"/>
+  <text x="610" y="1452" class="small-text">输出结果</text>
+  
+  <line x1="720" y1="1447" x2="760" y2="1447" class="arrow"/>
+  <text x="770" y="1452" class="small-text">处理流程</text>
+  
+  <line x1="860" y1="1447" x2="900" y2="1447" class="data-flow"/>
+  <text x="910" y="1452" class="small-text">数据流转</text>
+
+  <text x="80" y="1480" class="small-text">核心特性:</text>
+  <text x="80" y="1500" class="small-text">• 动态视角适应: 自动处理1-N个视角的输入</text>
+  <text x="80" y="1520" class="small-text">• 位置编码融合: 将视角位置信息嵌入到图像特征中</text>
+  <text x="500" y="1500" class="small-text">• 序列化输出: 将多视角特征展平为统一序列表示</text>
+  <text x="500" y="1520" class="small-text">• 批量处理: 支持批量多视角图像的高效处理</text>
+
+</svg>
