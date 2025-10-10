@@ -1257,38 +1257,109 @@ if __name__ == '__main__':
                 
                 # 检查是否是Lightning checkpoint格式 (.ckpt)
                 if args.depth_lora_path.endswith('.ckpt'):
-                    print("检测到Lightning checkpoint格式，尝试直接加载状态字典...")
+                    print("检测到Lightning checkpoint格式，加载LoRA和ControlNet权重...")
                     ckpt = torch.load(args.depth_lora_path, map_location='cpu')
                     
                     if 'state_dict' in ckpt:
                         state_dict = ckpt['state_dict']
-                        print(f"检查点包含 {len(state_dict)} 个权重")
+                        print(f"Checkpoint包含 {len(state_dict)} 个权重")
                         
-                        # 检查哪些权重可以加载
-                        if hasattr(i23d_worker, 'model') and hasattr(i23d_worker.model, 'load_state_dict'):
-                            # 尝试直接加载到整个diffuser模型
+                        # 分析checkpoint内容
+                        lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                        controlnet_keys = [k for k in state_dict.keys() if k.startswith('controlnet.')]
+                        print(f"  - LoRA参数: {len(lora_keys)} 个")
+                        print(f"  - ControlNet参数: {len(controlnet_keys)} 个")
+                        
+                        success_count = 0
+                        
+                        # 1. 加载LoRA权重
+                        if lora_keys and hasattr(i23d_worker, 'model'):
                             try:
-                                i23d_worker.model.load_state_dict(state_dict, strict=False)
-                                print("✅ 成功通过Lightning checkpoint加载权重到整个模型")
-                            except Exception as load_error:
-                                print(f"❌ 直接加载失败: {load_error}")
-                                # 尝试去掉'model.'前缀再加载到子模型
+                                print("\n正在加载LoRA权重...")
+                                # 提取model相关的权重（包含LoRA）
                                 model_state_dict = {}
                                 for key, value in state_dict.items():
                                     if key.startswith('model.'):
                                         new_key = key[6:]  # 去掉'model.'前缀
                                         model_state_dict[new_key] = value
                                 
-                                if model_state_dict and hasattr(i23d_worker.model, 'model'):
+                                # 先应用LoRA配置到基础模型
+                                from peft import LoraConfig, get_peft_model
+                                lora_config = LoraConfig(
+                                    r=8,
+                                    lora_alpha=8,
+                                    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                    lora_dropout=0.0,
+                                )
+                                i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
+                                
+                                # 加载包含LoRA的权重
+                                missing, unexpected = i23d_worker.model.load_state_dict(
+                                    model_state_dict, strict=False)
+                                print(f"✅ LoRA权重加载成功")
+                                print(f"  - Missing keys: {len(missing)}")
+                                print(f"  - Unexpected keys: {len(unexpected)}")
+                                success_count += 1
+                                
+                            except Exception as e:
+                                print(f"❌ LoRA权重加载失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        # 2. 加载ControlNet权重
+                        if controlnet_keys:
+                            try:
+                                print("\n正在加载ControlNet权重...")
+                                # 检查pipeline是否有controlnet（可能需要重新创建）
+                                if not hasattr(i23d_worker, 'controlnet') or i23d_worker.controlnet is None:
+                                    print("  Pipeline中没有controlnet，尝试创建...")
+                                    # 创建MultiViewDepthControlNet
                                     try:
-                                        i23d_worker.model.model.load_state_dict(model_state_dict, strict=False)
-                                        print("✅ 成功通过去前缀的方式加载权重到主DiT模型")
-                                    except Exception as sub_error:
-                                        print(f"❌ 子模型加载也失败: {sub_error}")
+                                        from hy3dshape.controlnet_multiview import create_multiview_depth_controlnet
+                                        i23d_worker.controlnet = create_multiview_depth_controlnet(
+                                            in_channels=1,
+                                            num_views=4,
+                                            out_channels=768,
+                                            fusion_strategy='attention'
+                                        )
+                                        print("  ✅ MultiViewDepthControlNet已创建")
+                                    except Exception as create_error:
+                                        print(f"  ❌ 创建ControlNet失败: {create_error}")
+                                        i23d_worker.controlnet = None
+                                
+                                if i23d_worker.controlnet is not None:
+                                    # 提取controlnet权重（去掉'controlnet.'前缀）
+                                    controlnet_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('controlnet.'):
+                                            new_key = key[11:]  # 去掉'controlnet.'前缀
+                                            controlnet_state_dict[new_key] = value
+                                    
+                                    # 加载权重
+                                    missing, unexpected = i23d_worker.controlnet.load_state_dict(
+                                        controlnet_state_dict, strict=False)
+                                    print(f"✅ ControlNet权重加载成功")
+                                    print(f"  - Missing keys: {len(missing)}")
+                                    print(f"  - Unexpected keys: {len(unexpected)}")
+                                    
+                                    # 将controlnet移到正确的设备
+                                    if args.device == 'cuda':
+                                        i23d_worker.controlnet = i23d_worker.controlnet.cuda()
+                                    
+                                    success_count += 1
+                                    
+                            except Exception as e:
+                                print(f"❌ ControlNet权重加载失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        if success_count > 0:
+                            print(f"\n✅ 从Lightning checkpoint成功加载 {success_count} 个组件")
                         else:
-                            print("❌ 模型不支持状态字典加载")
+                            print("\n❌ 没有成功加载任何组件")
+                            
                     else:
-                        print("❌ checkpoint格式无效，缺少state_dict")
+                        print("❌ Checkpoint格式无效，缺少state_dict")
                 
                 elif os.path.isdir(args.depth_lora_path):
                     # 标准的PEFT格式目录

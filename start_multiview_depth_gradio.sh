@@ -9,27 +9,49 @@ HOST="0.0.0.0"
 DEVICE="cuda"
 
 # 多视图深度LoRA权重路径（根据实际情况修改）
-# 优先级：最新的checkpoint > 默认路径
+# 优先级：Lightning checkpoint (.ckpt) > PEFT格式 (step_*)
 DEPTH_LORA_PATH=""
 
-# 自动查找最新的checkpoint
-CHECKPOINT_DIRS=(
-    "./hy3dshape/output_folder/dit/multiview_depth_lora_checkpoints"
-    "./output_folder/dit/multiview_depth_lora_checkpoints"
+# 1. 首先查找Lightning checkpoint (.ckpt文件)
+LIGHTNING_DIRS=(
+    "./hy3dshape/output_folder/dit/depth_lora_finetuning/ckpt"
+    "./output_folder/dit/depth_lora_finetuning/ckpt"
 )
 
-echo "正在查找最新的LoRA checkpoint..."
-for dir in "${CHECKPOINT_DIRS[@]}"; do
+echo "正在查找最新的checkpoint..."
+echo "1. 查找Lightning checkpoint (.ckpt)..."
+for dir in "${LIGHTNING_DIRS[@]}"; do
     if [ -d "$dir" ]; then
-        # 查找最新的step_*目录
-        latest_ckpt=$(ls -d "$dir"/step_* 2>/dev/null | sort -V | tail -n 1)
+        # 查找最新的.ckpt文件
+        latest_ckpt=$(ls -t "$dir"/*.ckpt 2>/dev/null | head -n 1)
         if [ -n "$latest_ckpt" ]; then
             DEPTH_LORA_PATH="$latest_ckpt"
-            echo "找到checkpoint: $DEPTH_LORA_PATH"
+            echo "✅ 找到Lightning checkpoint: $DEPTH_LORA_PATH"
             break
         fi
     fi
 done
+
+# 2. 如果没有找到Lightning checkpoint，查找PEFT格式
+if [ -z "$DEPTH_LORA_PATH" ]; then
+    echo "2. 查找PEFT格式 LoRA checkpoint (step_*)..."
+    PEFT_DIRS=(
+        "./hy3dshape/output_folder/dit/multiview_depth_lora_checkpoints"
+        "./output_folder/dit/multiview_depth_lora_checkpoints"
+    )
+    
+    for dir in "${PEFT_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            # 查找最新的step_*目录
+            latest_ckpt=$(ls -d "$dir"/step_* 2>/dev/null | sort -V | tail -n 1)
+            if [ -n "$latest_ckpt" ]; then
+                DEPTH_LORA_PATH="$latest_ckpt"
+                echo "✅ 找到PEFT checkpoint: $DEPTH_LORA_PATH"
+                break
+            fi
+        fi
+    done
+fi
 
 if [ -z "$DEPTH_LORA_PATH" ]; then
     echo "⚠️  警告: 未找到多视图深度LoRA权重，将使用基础模型"
