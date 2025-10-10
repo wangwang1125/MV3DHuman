@@ -732,6 +732,10 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
     ) -> List[List[trimesh.Trimesh]]:
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
+        
+        # 获取深度条件相关参数
+        controlnet = kwargs.pop("controlnet", None)
+        depth = kwargs.pop("depth", None)
 
         self.set_surface_extractor(mc_algo)
 
@@ -745,12 +749,25 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
         # print('image', type(image), 'mask', type(mask))
         cond_inputs = self.prepare_image(image, mask)
         image = cond_inputs.pop('image')
+        
         cond = self.encode_cond(
             image=image,
             additional_cond_inputs=cond_inputs,
             do_classifier_free_guidance=do_classifier_free_guidance,
             dual_guidance=False,
         )
+        
+        # 如果有深度图和controlnet，处理深度条件并注入到cond中
+        if controlnet is not None and depth is not None:
+            print(f"[Pipeline] 使用ControlNet处理深度图，形状: {depth.shape}")
+            depth = depth.to(device).to(dtype)
+            depth_features = controlnet(depth)  # (B, 1, hidden_dim) 或 (B, hidden_dim)
+            
+            # 将深度特征注入到条件中
+            if 'additional' not in cond:
+                cond['additional'] = {}
+            cond['additional']['depth'] = depth_features
+            print(f"[Pipeline] 深度特征已注入，形状: {depth_features.shape}")
 
         batch_size = image.shape[0]
 

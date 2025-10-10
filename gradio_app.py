@@ -523,6 +523,11 @@ def _gen_shape(
         model_inputs['depth'] = depth_tensor
         mode_str = "多视图" if (MV_MODE and MULTIVIEW_DEPTH_MODE) else "单视图"
         print(f"{mode_str}深度图已添加到模型输入")
+        
+        # 如果pipeline有controlnet，也传递进去
+        if hasattr(i23d_worker, 'controlnet') and i23d_worker.controlnet is not None:
+            model_inputs['controlnet'] = i23d_worker.controlnet
+            print(f"ControlNet已添加到模型输入")
     
     outputs = i23d_worker(**model_inputs)
     time_meta['shape generation'] = time.time() - start_time
@@ -1315,7 +1320,7 @@ if __name__ == '__main__':
                                     print("  Pipeline中没有controlnet，尝试创建...")
                                     # 创建MultiViewDepthControlNet
                                     try:
-                                        from hy3dshape.controlnet_multiview import create_multiview_depth_controlnet
+                                        from hy3dshape.models.controlnet_multiview import create_multiview_depth_controlnet
                                         i23d_worker.controlnet = create_multiview_depth_controlnet(
                                             in_channels=1,
                                             num_views=4,
@@ -1325,6 +1330,8 @@ if __name__ == '__main__':
                                         print("  ✅ MultiViewDepthControlNet已创建")
                                     except Exception as create_error:
                                         print(f"  ❌ 创建ControlNet失败: {create_error}")
+                                        import traceback
+                                        traceback.print_exc()
                                         i23d_worker.controlnet = None
                                 
                                 if i23d_worker.controlnet is not None:

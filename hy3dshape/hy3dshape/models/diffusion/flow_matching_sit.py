@@ -394,6 +394,12 @@ class Diffuser(pl.LightningModule):
 
                     image = batch.get("image", None)
                     mask = batch.get('mask', None)
+                    depth = batch.get('depth', None)  # 获取深度图
+                    
+                    # 如果有controlnet和depth，将controlnet传递给pipeline
+                    if self.controlnet is not None and depth is not None:
+                        additional_params['controlnet'] = self.controlnet
+                        additional_params['depth'] = depth
                     
                     outputs = self.pipeline(image=image, 
                                             mask=mask,
