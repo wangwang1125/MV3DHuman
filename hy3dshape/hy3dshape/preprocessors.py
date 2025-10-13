@@ -125,11 +125,13 @@ class MVImageProcessorV2(ImageProcessorV2):
 
     def __init__(self, size=512, border_ratio=None):
         super().__init__(size, border_ratio)
+        # 视图索引必须与训练时一致: [front, right, back, left]
+        # 对应角度: [0°, 90°, 180°, 270°]
         self.view2idx = {
             'front': 0,
-            'left': 1,
+            'right': 1,  # 90° 顺时针
             'back': 2,
-            'right': 3
+            'left': 3    # 270° 顺时针
         }
 
     def __call__(self, image_dict, border_ratio=0.15, to_tensor=True, **kwargs):
@@ -154,7 +156,7 @@ class MVImageProcessorV2(ImageProcessorV2):
         outputs = {
             'image': image,
             'mask': mask,
-            'view_idxs': view_idxs
+            'view_idxs': [list(view_idxs)]  # 包装成列表的列表，每个batch样本一个列表
         }
         return outputs
 
