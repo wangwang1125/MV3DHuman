@@ -266,7 +266,8 @@ def load_multiview_depths(depth_files_dict, target_size=518):
         target_size: 目标图像尺寸
     
     Returns:
-        torch.Tensor: 多视图深度图张量，形状为 (num_views, 1, H, W)
+        torch.Tensor: 多视图深度图张量，形状为 (1, num_views, 1, H, W)
+                      其中 1 是 batch_size，num_views 是视图数量（最多4个）
     """
     # 按照训练代码中的顺序：front(0), right(1), back(2), left(3)
     view_order = ['front', 'right', 'back', 'left']
@@ -287,6 +288,8 @@ def load_multiview_depths(depth_files_dict, target_size=518):
     
     # 堆叠所有视图的深度图
     multiview_depth = torch.stack(depth_tensors, dim=0)  # (num_views, 1, H, W)
+    # 添加 batch 维度以匹配 ControlNet 的期望输入格式
+    multiview_depth = multiview_depth.unsqueeze(0)  # (1, num_views, 1, H, W)
     print(f"多视图深度图张量形状: {multiview_depth.shape}")
     
     return multiview_depth
