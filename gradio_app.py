@@ -689,7 +689,14 @@ def shape_generation(
     mesh.metadata['extras'] = stats
 
     path = export_mesh(mesh, save_folder, textured=False)
+    print(f"✅ Mesh导出成功: {path}")
+    print(f"   文件是否存在: {os.path.exists(path)}")
+    print(f"   文件大小: {os.path.getsize(path) if os.path.exists(path) else 'N/A'} bytes")
+    
     model_viewer_html = build_model_viewer_html(save_folder, height=HTML_HEIGHT, width=HTML_WIDTH)
+    print(f"✅ Model viewer HTML已生成")
+    print(f"   HTML内容长度: {len(model_viewer_html)} 字符")
+    
     if args.low_vram_mode:
         torch.cuda.empty_cache()
     return (
