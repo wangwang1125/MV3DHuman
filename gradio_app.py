@@ -1330,7 +1330,12 @@ if __name__ == '__main__':
                                             out_channels=768,
                                             fusion_strategy='attention'
                                         )
-                                        print("  ✅ MultiViewDepthControlNet已创建")
+                                        # 移到正确的设备和数据类型
+                                        i23d_worker.controlnet = i23d_worker.controlnet.to(
+                                            device=args.device,
+                                            dtype=i23d_worker.dtype
+                                        )
+                                        print(f"  ✅ MultiViewDepthControlNet已创建并移至 {args.device}, 数据类型: {i23d_worker.dtype}")
                                     except Exception as create_error:
                                         print(f"  ❌ 创建ControlNet失败: {create_error}")
                                         import traceback
@@ -1338,12 +1343,21 @@ if __name__ == '__main__':
                                         i23d_worker.controlnet = None
                                 
                                 if i23d_worker.controlnet is not None:
+                                    # 先将controlnet移到正确的设备和数据类型（在加载权重之前）
+                                    target_dtype = i23d_worker.dtype
+                                    i23d_worker.controlnet = i23d_worker.controlnet.to(
+                                        device=args.device,
+                                        dtype=target_dtype
+                                    )
+                                    print(f"  ControlNet已移至设备: {args.device}, 数据类型: {target_dtype}")
+                                    
                                     # 提取controlnet权重（去掉'controlnet.'前缀）
                                     controlnet_state_dict = {}
                                     for key, value in state_dict.items():
                                         if key.startswith('controlnet.'):
                                             new_key = key[11:]  # 去掉'controlnet.'前缀
-                                            controlnet_state_dict[new_key] = value
+                                            # 确保权重的数据类型与模型一致
+                                            controlnet_state_dict[new_key] = value.to(dtype=target_dtype)
                                     
                                     # 加载权重
                                     missing, unexpected = i23d_worker.controlnet.load_state_dict(
@@ -1351,10 +1365,6 @@ if __name__ == '__main__':
                                     print(f"✅ ControlNet权重加载成功")
                                     print(f"  - Missing keys: {len(missing)}")
                                     print(f"  - Unexpected keys: {len(unexpected)}")
-                                    
-                                    # 将controlnet移到正确的设备
-                                    if args.device == 'cuda':
-                                        i23d_worker.controlnet = i23d_worker.controlnet.cuda()
                                     
                                     success_count += 1
                                     
