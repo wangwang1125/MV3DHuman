@@ -1414,11 +1414,45 @@ if __name__ == '__main__':
                 print(f"深度 LoRA 路径不存在: {args.depth_lora_path}")
             print("使用基础深度条件模型（未加载LoRA权重）")
         
-        # 无论是否加载LoRA，在多视图深度模式下都要设置正确的image processor
+        # 无论是否加载LoRA，在多视图深度模式下都要设置正确的image processor和encoder
         if MULTIVIEW_DEPTH_MODE and hasattr(i23d_worker, 'image_processor'):
             from hy3dshape.preprocessors import MVImageProcessorV2
+            from hy3dshape.models.conditioner import DinoImageEncoderMV
+            
             i23d_worker.image_processor = MVImageProcessorV2(size=518)
             print("✅ 已设置MVImageProcessorV2用于多视图深度处理")
+            
+            # 检查并替换conditioner中的encoder
+            if hasattr(i23d_worker, 'conditioner'):
+                if hasattr(i23d_worker.conditioner, 'main_image_encoder'):
+                    current_encoder = i23d_worker.conditioner.main_image_encoder
+                    # 如果当前encoder不是DinoImageEncoderMV，则替换
+                    if not isinstance(current_encoder, DinoImageEncoderMV):
+                        print(f"检测到当前encoder类型: {type(current_encoder).__name__}")
+                        print("正在替换为DinoImageEncoderMV...")
+                        
+                        # 创建新的DinoImageEncoderMV encoder
+                        new_encoder = DinoImageEncoderMV(
+                            version='facebook/dinov2-large',
+                            image_size=518,
+                            use_cls_token=True,
+                            view_num=4
+                        )
+                        
+                        # 如果原encoder有已加载的模型权重，尝试复用
+                        if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):
+                            try:
+                                new_encoder.model.load_state_dict(current_encoder.model.state_dict())
+                                print("✅ 已复用原encoder的模型权重")
+                            except Exception as e:
+                                print(f"⚠️ 无法复用原encoder权重，使用默认权重: {e}")
+                        
+                        # 将新encoder移到相同设备和数据类型
+                        new_encoder = new_encoder.to(args.device, dtype=i23d_worker.dtype)
+                        
+                        # 替换encoder
+                        i23d_worker.conditioner.main_image_encoder = new_encoder
+                        print("✅ 已成功替换为DinoImageEncoderMV")
     else:
         print("正在加载标准RGB模型...")
         i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
