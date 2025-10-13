@@ -461,7 +461,7 @@ def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mr =
     
     if save_depth:
         depth_file_output = nodes.new('CompositorNodeOutputFile')
-        depth_file_output.base_path = ''
+        depth_file_output.base_path = '/'  # 设置为根目录，使绝对路径生效
         depth_file_output.file_slots[0].use_node_format = True
         depth_file_output.format.file_format = "OPEN_EXR"
         links.new(render_layers.outputs['Depth'], depth_file_output.inputs[0])
@@ -471,7 +471,7 @@ def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mr =
     
     if save_normal:
         normal_file_output = nodes.new('CompositorNodeOutputFile')
-        normal_file_output.base_path = ''
+        normal_file_output.base_path = '/'  # 设置为根目录，使绝对路径生效
         normal_file_output.file_slots[0].use_node_format = True
         normal_file_output.format.file_format = 'OPEN_EXR'
         links.new(render_layers.outputs['Normal'], normal_file_output.inputs[0])
@@ -481,7 +481,7 @@ def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mr =
     
     if save_albedo:
         albedo_file_output = nodes.new('CompositorNodeOutputFile')
-        albedo_file_output.base_path = ''
+        albedo_file_output.base_path = '/'  # 设置为根目录，使绝对路径生效
         albedo_file_output.file_slots[0].use_node_format = True
         albedo_file_output.format.file_format = 'PNG'
         albedo_file_output.format.color_mode = 'RGBA'
@@ -497,8 +497,8 @@ def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mr =
         #composite_nodes.append((alpha_albedo.outputs['Image'], albedo_file_output.inputs[0]))
 
     if save_mr:
-        mr_file_output = tree.nodes.new(type='CompositorNodeOutputFile')
-        mr_file_output.base_path = ''
+        mr_file_output = nodes.new('CompositorNodeOutputFile')
+        mr_file_output.base_path = '/'  # 设置为根目录，使绝对路径生效
         mr_file_output.file_slots[0].use_node_format = True
         mr_file_output.format.file_format = 'OPEN_EXR'
         
@@ -512,7 +512,7 @@ def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mr =
         bpy.data.worlds['World'].mist_settings.depth = 10
         
         mist_file_output = nodes.new('CompositorNodeOutputFile')
-        mist_file_output.base_path = ''
+        mist_file_output.base_path = '/'  # 设置为根目录，使绝对路径生效
         mist_file_output.file_slots[0].use_node_format = True
         mist_file_output.format.file_format = 'PNG'
         mist_file_output.format.color_mode = 'BW'

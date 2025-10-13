@@ -4,13 +4,13 @@
 # 基于原始pipeline.sh修改
 
 export OPENCV_IO_ENABLE_OPENEXR=1
-export OUTPUT_FOLDER=mini_mv_depth_trainset/preprocessed
+export OUTPUT_FOLDER=/mnt/g/mini_mv_depth_trainset/preprocessed
 export BLENDER_PATH=/mnt/d/workapp/wsl/blender/4.5/python/bin/python3.11
 
 # 自定义输入文件夹路径 - 可以修改为任意目录
 # 默认为当前目录 (.) - 递归搜索所有子目录
 # 示例: export INPUT_FOLDER="../test_models" 或 export INPUT_FOLDER="/path/to/your/obj/files"
-export INPUT_FOLDER="/mnt/d/down/obj/02Dressed/TeenF"
+export INPUT_FOLDER="/mnt/g/01HighModels"
 
 # 检查Blender路径是否存在
 if [ ! -f "$BLENDER_PATH" ]; then
