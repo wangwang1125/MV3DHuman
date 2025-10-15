@@ -92,6 +92,8 @@ model:
       params:
         with_decoupled_ca: true  # 启用additional条件处理
         additional_cond_hidden_state: 768  # 深度特征维度，与MultiViewControlNet输出匹配
+        decoupled_ca_dim: 16  # DCA使用的token数量（现在与深度特征匹配）
+        decoupled_ca_weight: 2.0  # 增加深度条件权重（从1.0提高到2.0）
         num_views: 4  # Number of views for the denoiser
         
     scheduler_cfg:

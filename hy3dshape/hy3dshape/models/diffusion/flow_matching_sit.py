@@ -441,8 +441,18 @@ class Diffuser(pl.LightningModule):
                     nn.Linear(256, out_channels),
                 )
                 
-                # 为了匹配DiT期望的序列格式，添加序列扩展
-                self.seq_expand = nn.Linear(out_channels, out_channels)
+                # Token expansion: generate diverse tokens similar to MultiViewDepthControlNet
+                self.num_depth_tokens = 16
+                self.depth_token_queries = nn.Parameter(torch.randn(1, self.num_depth_tokens, out_channels) * 0.02)
+                
+                self.token_generator = nn.MultiheadAttention(
+                    embed_dim=out_channels,
+                    num_heads=8,
+                    dropout=0.0,
+                    batch_first=True
+                )
+                
+                self.token_norm = nn.LayerNorm(out_channels)
                 
                 # Initialize weights
                 for m in self.modules():
@@ -450,17 +460,31 @@ class Diffuser(pl.LightningModule):
                         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                     elif isinstance(m, nn.Linear):
                         nn.init.normal_(m.weight, 0, 0.01)
-                        nn.init.zeros_(m.bias)
+                        if m.bias is not None:
+                            nn.init.zeros_(m.bias)
                         
             def forward(self, depth):
                 """
                 Args:
                     depth: (B, 1, H, W) depth maps
                 Returns:
-                    depth_features: (B, 1, out_channels) depth features as sequence
+                    depth_features: (B, 16, out_channels) depth features as sequence
                 """
+                B = depth.shape[0]
                 features = self.depth_encoder(depth)  # (B, out_channels)
-                features = self.seq_expand(features)   # (B, out_channels)
-                return features.unsqueeze(1)          # (B, 1, out_channels) - sequence format
+                
+                # Generate diverse tokens using cross-attention
+                depth_kv = features.unsqueeze(1)  # (B, 1, out_channels)
+                queries = self.depth_token_queries.expand(B, -1, -1)  # (B, 16, out_channels)
+                
+                depth_tokens, _ = self.token_generator(
+                    query=queries,
+                    key=depth_kv,
+                    value=depth_kv,
+                    need_weights=False
+                )
+                
+                depth_tokens = self.token_norm(depth_tokens + queries)  # (B, 16, out_channels)
+                return depth_tokens
         
         return DepthControlNet(in_channels)

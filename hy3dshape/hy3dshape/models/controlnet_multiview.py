@@ -78,6 +78,22 @@ class MultiViewDepthControlNet(nn.Module):
         # Final projection to match DiT expected feature dimension
         self.final_proj = nn.Linear(out_channels, out_channels)
         
+        # Token expansion: generate 16 diverse tokens from single depth feature
+        # Using learnable queries similar to DETR's object queries
+        self.num_depth_tokens = 16  # Match DCA's decoupled_ca_dim
+        self.depth_token_queries = nn.Parameter(torch.randn(1, self.num_depth_tokens, out_channels) * 0.02)
+        
+        # Cross-attention to generate diverse tokens
+        self.token_generator = nn.MultiheadAttention(
+            embed_dim=out_channels,
+            num_heads=8,
+            dropout=0.0,
+            batch_first=True
+        )
+        
+        # Layer norm for stability
+        self.token_norm = nn.LayerNorm(out_channels)
+        
         # Initialize weights
         self._initialize_weights()
     
@@ -168,8 +184,30 @@ class MultiViewDepthControlNet(nn.Module):
         # Final projection
         output_features = self.final_proj(fused_features)  # (B, out_channels)
         
-        # Return as sequence format for DiT: (B, 1, out_channels)
-        return output_features.unsqueeze(1)
+        # Generate 16 diverse depth tokens using learnable queries and cross-attention
+        # This is more effective than simple repetition as it allows each token to
+        # capture different aspects of the depth information
+        B = output_features.shape[0]
+        
+        # Expand depth feature as key/value
+        depth_kv = output_features.unsqueeze(1)  # (B, 1, out_channels)
+        
+        # Expand learnable queries for this batch
+        queries = self.depth_token_queries.expand(B, -1, -1)  # (B, 16, out_channels)
+        
+        # Use cross-attention: queries attend to depth features
+        # This generates 16 diverse tokens, each potentially focusing on different depth aspects
+        depth_tokens, _ = self.token_generator(
+            query=queries,           # (B, 16, out_channels)
+            key=depth_kv,           # (B, 1, out_channels)
+            value=depth_kv,         # (B, 1, out_channels)
+            need_weights=False
+        )
+        
+        # Add residual connection and normalize
+        depth_tokens = self.token_norm(depth_tokens + queries)  # (B, 16, out_channels)
+        
+        return depth_tokens  # (B, 16, out_channels)
     
     def _pad_views(self, depth_maps: torch.Tensor, target_views: int) -> torch.Tensor:
         """
