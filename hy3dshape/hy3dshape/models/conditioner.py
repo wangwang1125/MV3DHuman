@@ -221,7 +221,9 @@ class DinoImageEncoderMV(DinoImageEncoder):
         # Apply Token Merging if enabled
         if self.enable_token_merging and hasattr(self, 'token_merger'):
             # Store merge info for potential use in loss computation
+            print(f"Token Merging: 输入token数量 = {last_hidden_state.shape[1]}")
             merged_tokens, merge_weights = self.token_merger(last_hidden_state)
+            print(f"Token Merging: 输出token数量 = {merged_tokens.shape[1]}")
             
             # Add merge info to kwargs for potential use in training
             if 'merge_weights' not in kwargs:
@@ -248,8 +250,10 @@ class DinoImageEncoderMV(DinoImageEncoder):
         if self.enable_token_merging and hasattr(self, 'token_merger'):
             # Use target token count for unconditional embedding
             token_count = self.merge_target_tokens
+            print(f"Unconditional embedding: 使用Token Merging目标token数量 = {token_count}")
         else:
             token_count = original_token_count
+            print(f"Unconditional embedding: 使用原始token数量 = {token_count}")
             
         zero = torch.zeros(
             batch_size,
