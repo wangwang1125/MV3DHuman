@@ -167,16 +167,13 @@ class DinoImageEncoderMV(DinoImageEncoder):
         if self.enable_token_merging:
             # Calculate target token count based on reduction ratio
             original_mv_tokens = self.num_patches * self.view_num
-            self.merge_target_tokens = max(
-                self.target_tokens,
-                int(original_mv_tokens * (1 - self.token_merge_ratio))
-            )
+            # 使用target_tokens作为最终目标，这应该与Token Merging的实际输出一致
+            self.merge_target_tokens = self.target_tokens
             
-            self.token_merger = MultiViewTokenMerging(
+            # 使用AdaptiveTokenMerging来精确控制目标token数量
+            self.token_merger = AdaptiveTokenMerging(
                 dim=self.model.config.hidden_size,
-                num_views=self.view_num,
-                view_merge_ratio=0.5,  # Merge 50% within each view
-                cross_view_merge_ratio=0.25,  # Additional 25% cross-view merging
+                target_tokens=self.target_tokens,  # 使用目标token数量
                 merge_strategy=self.token_merge_strategy
             )
 
@@ -221,9 +218,7 @@ class DinoImageEncoderMV(DinoImageEncoder):
         # Apply Token Merging if enabled
         if self.enable_token_merging and hasattr(self, 'token_merger'):
             # Store merge info for potential use in loss computation
-            print(f"Token Merging: 输入token数量 = {last_hidden_state.shape[1]}")
             merged_tokens, merge_weights = self.token_merger(last_hidden_state)
-            print(f"Token Merging: 输出token数量 = {merged_tokens.shape[1]}")
             
             # Add merge info to kwargs for potential use in training
             if 'merge_weights' not in kwargs:
@@ -250,10 +245,8 @@ class DinoImageEncoderMV(DinoImageEncoder):
         if self.enable_token_merging and hasattr(self, 'token_merger'):
             # Use target token count for unconditional embedding
             token_count = self.merge_target_tokens
-            print(f"Unconditional embedding: 使用Token Merging目标token数量 = {token_count}")
         else:
             token_count = original_token_count
-            print(f"Unconditional embedding: 使用原始token数量 = {token_count}")
             
         zero = torch.zeros(
             batch_size,
