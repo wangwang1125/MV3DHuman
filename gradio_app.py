@@ -1457,16 +1457,29 @@ if __name__ == '__main__':
                         token_merge_ratio = float(os.getenv('TOKEN_MERGE_RATIO', '0.75'))
                         token_merge_strategy = os.getenv('TOKEN_MERGE_STRATEGY', 'attention')
                         
-                        new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
-                            image_size=518,
-                            use_cls_token=True,
-                            view_num=4,
-                            enable_token_merging=enable_token_merging,
-                            token_merge_ratio=token_merge_ratio,
-                            token_merge_strategy=token_merge_strategy,
-                            target_tokens=1369
-                        )
+                        # 根据训练配置确定视图数量
+                        # 如果使用了Token Merging，需要匹配训练时的配置
+                        if enable_token_merging:
+                            # Token Merging模式：使用与训练时相同的配置
+                            new_encoder = DinoImageEncoderMV(
+                                version='facebook/dinov2-large',
+                                image_size=518,
+                                use_cls_token=True,
+                                view_num=4,
+                                enable_token_merging=True,
+                                token_merge_ratio=token_merge_ratio,
+                                token_merge_strategy=token_merge_strategy,
+                                target_tokens=1369
+                            )
+                        else:
+                            # 标准模式：不使用Token Merging
+                            new_encoder = DinoImageEncoderMV(
+                                version='facebook/dinov2-large',
+                                image_size=518,
+                                use_cls_token=True,
+                                view_num=4,
+                                enable_token_merging=False
+                            )
                         
                         if enable_token_merging:
                             print(f"✅ 已启用Token Merging: 策略={token_merge_strategy}, 减少比例={token_merge_ratio}")
