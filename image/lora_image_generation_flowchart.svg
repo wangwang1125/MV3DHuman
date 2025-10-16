@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="1200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font-family: Arial, sans-serif; font-size: 24px; font-weight: bold; fill: #2c3e50; }
+      .subtitle { font-family: Arial, sans-serif; font-size: 16px; font-weight: bold; fill: #34495e; }
+      .text { font-family: Arial, sans-serif; font-size: 12px; fill: #2c3e50; }
+      .small-text { font-family: Arial, sans-serif; font-size: 10px; fill: #7f8c8d; }
+      .input-box { fill: #e8f5e8; stroke: #27ae60; stroke-width: 2; }
+      .process-box { fill: #e3f2fd; stroke: #2196f3; stroke-width: 2; }
+      .lora-box { fill: #fff3e0; stroke: #ff9800; stroke-width: 2; }
+      .output-box { fill: #fce4ec; stroke: #e91e63; stroke-width: 2; }
+      .arrow { stroke: #34495e; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .data-flow { stroke: #3498db; stroke-width: 1.5; fill: none; stroke-dasharray: 5,5; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#34495e" />
+    </marker>
+  </defs>
+  
+  <!-- Title -->
+  <text x="700" y="30" text-anchor="middle" class="title">HunYuan3D LoRA 图像生成流程图</text>
+  <text x="700" y="55" text-anchor="middle" class="subtitle">从LoRA输入到3D网格输出的完整数据流</text>
+  
+  <!-- Input Stage -->
+  <g id="input-stage">
+    <text x="50" y="100" class="subtitle">1. 输入阶段</text>
+    
+    <!-- RGB Image Input -->
+    <rect x="50" y="120" width="150" height="80" class="input-box" rx="5"/>
+    <text x="125" y="140" text-anchor="middle" class="text">RGB图像</text>
+    <text x="125" y="155" text-anchor="middle" class="small-text">(B, 3, H, W)</text>
+    <text x="125" y="170" text-anchor="middle" class="small-text">PNG/JPG格式</text>
+    <text x="125" y="185" text-anchor="middle" class="small-text">224x224分辨率</text>
+    
+    <!-- Depth Image Input -->
+    <rect x="220" y="120" width="150" height="80" class="input-box" rx="5"/>
+    <text x="295" y="140" text-anchor="middle" class="text">深度图像</text>
+    <text x="295" y="155" text-anchor="middle" class="small-text">(B, 1, H, W)</text>
+    <text x="295" y="170" text-anchor="middle" class="small-text">EXR格式</text>
+    <text x="295" y="185" text-anchor="middle" class="small-text">归一化[0,1]</text>
+    
+    <!-- Multi-view Input -->
+    <rect x="390" y="120" width="150" height="80" class="input-box" rx="5"/>
+    <text x="465" y="140" text-anchor="middle" class="text">多视角输入</text>
+    <text x="465" y="155" text-anchor="middle" class="small-text">(B, 4, 3, H, W)</text>
+    <text x="465" y="170" text-anchor="middle" class="small-text">4个视角</text>
+    <text x="465" y="185" text-anchor="middle" class="small-text">可选输入</text>
+  </g>
+  
+  <!-- Conditioning Stage -->
+  <g id="conditioning-stage">
+    <text x="50" y="250" class="subtitle">2. 条件编码阶段</text>
+    
+    <!-- Image Encoder -->
+    <rect x="50" y="270" width="200" height="100" class="process-box" rx="5"/>
+    <text x="150" y="290" text-anchor="middle" class="text">图像编码器</text>
+    <text x="150" y="305" text-anchor="middle" class="small-text">DinoImageEncoder</text>
+    <text x="150" y="320" text-anchor="middle" class="small-text">CLIP/DINOv2</text>
+    <text x="150" y="335" text-anchor="middle" class="small-text">输出: (B, 257, 768)</text>
+    <text x="150" y="350" text-anchor="middle" class="small-text">contexts['main']</text>
+    
+    <!-- ControlNet for Depth -->
+    <rect x="270" y="270" width="200" height="100" class="process-box" rx="5"/>
+    <text x="370" y="290" text-anchor="middle" class="text">深度ControlNet</text>
+    <text x="370" y="305" text-anchor="middle" class="small-text">DepthControlNet</text>
+    <text x="370" y="320" text-anchor="middle" class="small-text">Linear(256, 768)</text>
+    <text x="370" y="335" text-anchor="middle" class="small-text">输出: (B, 1, 768)</text>
+    <text x="370" y="350" text-anchor="middle" class="small-text">contexts['additional']['depth']</text>
+    
+    <!-- Multi-view Encoder -->
+    <rect x="490" y="270" width="200" height="100" class="process-box" rx="5"/>
+    <text x="590" y="290" text-anchor="middle" class="text">多视角编码器</text>
+    <text x="590" y="305" text-anchor="middle" class="small-text">DinoImageEncoderMV</text>
+    <text x="590" y="320" text-anchor="middle" class="small-text">视角位置编码</text>
+    <text x="590" y="335" text-anchor="middle" class="small-text">输出: (B, 1028, 768)</text>
+    <text x="590" y="350" text-anchor="middle" class="small-text">contexts['additional']</text>
+  </g>
+  
+  <!-- LoRA Application Stage -->
+  <g id="lora-stage">
+    <text x="50" y="420" class="subtitle">3. LoRA应用阶段</text>
+    
+    <!-- LoRA Configuration -->
+    <rect x="50" y="440" width="300" height="120" class="lora-box" rx="5"/>
+    <text x="200" y="460" text-anchor="middle" class="text">LoRA配置</text>
+    <text x="200" y="480" text-anchor="middle" class="small-text">rank: 8</text>
+    <text x="200" y="495" text-anchor="middle" class="small-text">target_modules: ["to_q", "to_k", "to_v", "to_out.0"]</text>
+    <text x="200" y="510" text-anchor="middle" class="small-text">应用于: HunYuanDiTPlain</text>
+    <text x="200" y="525" text-anchor="middle" class="small-text">影响层数: 192个LoRA适配器</text>
+    <text x="200" y="540" text-anchor="middle" class="small-text">自注意力 + 交叉注意力</text>
+    
+    <!-- LoRA Target Layers -->
+    <rect x="370" y="440" width="250" height="120" class="lora-box" rx="5"/>
+    <text x="495" y="460" text-anchor="middle" class="text">LoRA目标层</text>
+    <text x="495" y="480" text-anchor="middle" class="small-text">Self-Attention:</text>
+    <text x="495" y="495" text-anchor="middle" class="small-text">• to_q, to_k, to_v, to_out.0</text>
+    <text x="495" y="510" text-anchor="middle" class="small-text">Cross-Attention:</text>
+    <text x="495" y="525" text-anchor="middle" class="small-text">• to_q, to_k, to_v, to_out.0</text>
+    <text x="495" y="540" text-anchor="middle" class="small-text">24层 × 8个模块 = 192个适配器</text>
+  </g>
+  
+  <!-- DiT Processing Stage -->
+  <g id="dit-stage">
+    <text x="50" y="610" class="subtitle">4. DiT处理阶段</text>
+    
+    <!-- Latent Preparation -->
+    <rect x="50" y="630" width="180" height="80" class="process-box" rx="5"/>
+    <text x="140" y="650" text-anchor="middle" class="text">潜在空间准备</text>
+    <text x="140" y="665" text-anchor="middle" class="small-text">随机噪声初始化</text>
+    <text x="140" y="680" text-anchor="middle" class="small-text">(B, C, H, W)</text>
+    <text x="140" y="695" text-anchor="middle" class="small-text">VAE潜在维度</text>
+    
+    <!-- Time Embedding -->
+    <rect x="250" y="630" width="180" height="80" class="process-box" rx="5"/>
+    <text x="340" y="650" text-anchor="middle" class="text">时间步嵌入</text>
+    <text x="340" y="665" text-anchor="middle" class="small-text">Flow Matching</text>
+    <text x="340" y="680" text-anchor="middle" class="small-text">t ∈ [0, 1]</text>
+    <text x="340" y="695" text-anchor="middle" class="small-text">线性插值</text>
+    
+    <!-- HunYuanDiT Blocks -->
+    <rect x="450" y="630" width="200" height="80" class="lora-box" rx="5"/>
+    <text x="550" y="650" text-anchor="middle" class="text">HunYuanDiT块</text>
+    <text x="550" y="665" text-anchor="middle" class="small-text">24层DiT块</text>
+    <text x="550" y="680" text-anchor="middle" class="small-text">LoRA增强注意力</text>
+    <text x="550" y="695" text-anchor="middle" class="small-text">条件融合</text>
+  </g>
+  
+  <!-- Attention Mechanism Detail -->
+  <g id="attention-detail">
+    <text x="700" y="610" class="subtitle">5. 注意力机制详情</text>
+    
+    <!-- Self-Attention -->
+    <rect x="700" y="630" width="200" height="100" class="lora-box" rx="5"/>
+    <text x="800" y="650" text-anchor="middle" class="text">自注意力 + LoRA</text>
+    <text x="800" y="665" text-anchor="middle" class="small-text">Q = Linear_q(x) + LoRA_q(x)</text>
+    <text x="800" y="680" text-anchor="middle" class="small-text">K = Linear_k(x) + LoRA_k(x)</text>
+    <text x="800" y="695" text-anchor="middle" class="small-text">V = Linear_v(x) + LoRA_v(x)</text>
+    <text x="800" y="710" text-anchor="middle" class="small-text">Out = Linear_out + LoRA_out</text>
+    
+    <!-- Cross-Attention -->
+    <rect x="920" y="630" width="200" height="100" class="lora-box" rx="5"/>
+    <text x="1020" y="650" text-anchor="middle" class="text">交叉注意力 + LoRA</text>
+    <text x="1020" y="665" text-anchor="middle" class="small-text">Q = Linear_q(x) + LoRA_q(x)</text>
+    <text x="1020" y="680" text-anchor="middle" class="small-text">K = Linear_k(cond) + LoRA_k(cond)</text>
+    <text x="1020" y="695" text-anchor="middle" class="small-text">V = Linear_v(cond) + LoRA_v(cond)</text>
+    <text x="1020" y="710" text-anchor="middle" class="small-text">融合图像+深度条件</text>
+  </g>
+  
+  <!-- Denoising Loop -->
+  <g id="denoising-loop">
+    <text x="50" y="780" class="subtitle">6. 去噪循环</text>
+    
+    <rect x="50" y="800" width="300" height="100" class="process-box" rx="5"/>
+    <text x="200" y="820" text-anchor="middle" class="text">Flow Matching去噪</text>
+    <text x="200" y="835" text-anchor="middle" class="small-text">for t in timesteps:</text>
+    <text x="200" y="850" text-anchor="middle" class="small-text">  noise_pred = model(latents, t, cond)</text>
+    <text x="200" y="865" text-anchor="middle" class="small-text">  latents = scheduler.step(noise_pred, t, latents)</text>
+    <text x="200" y="880" text-anchor="middle" class="small-text">分类器自由引导 (CFG)</text>
+    
+    <!-- Guidance -->
+    <rect x="370" y="800" width="200" height="100" class="process-box" rx="5"/>
+    <text x="470" y="820" text-anchor="middle" class="text">引导机制</text>
+    <text x="470" y="835" text-anchor="middle" class="small-text">guidance_scale = 5.0</text>
+    <text x="470" y="850" text-anchor="middle" class="small-text">条件 vs 无条件</text>
+    <text x="470" y="865" text-anchor="middle" class="small-text">深度条件增强</text>
+    <text x="470" y="880" text-anchor="middle" class="small-text">多视角一致性</text>
+  </g>
+  
+  <!-- Output Stage -->
+  <g id="output-stage">
+    <text x="50" y="950" class="subtitle">7. 输出阶段</text>
+    
+    <!-- VAE Decode -->
+    <rect x="50" y="970" width="180" height="80" class="process-box" rx="5"/>
+    <text x="140" y="990" text-anchor="middle" class="text">VAE解码</text>
+    <text x="140" y="1005" text-anchor="middle" class="small-text">潜在空间 → 3D特征</text>
+    <text x="140" y="1020" text-anchor="middle" class="small-text">ShapeVAE</text>
+    <text x="140" y="1035" text-anchor="middle" class="small-text">体素网格</text>
+    
+    <!-- Surface Extraction -->
+    <rect x="250" y="970" width="180" height="80" class="process-box" rx="5"/>
+    <text x="340" y="990" text-anchor="middle" class="text">表面提取</text>
+    <text x="340" y="1005" text-anchor="middle" class="small-text">Marching Cubes</text>
+    <text x="340" y="1020" text-anchor="middle" class="small-text">等值面提取</text>
+    <text x="340" y="1035" text-anchor="middle" class="small-text">网格生成</text>
+    
+    <!-- Final Output -->
+    <rect x="450" y="970" width="180" height="80" class="output-box" rx="5"/>
+    <text x="540" y="990" text-anchor="middle" class="text">3D网格输出</text>
+    <text x="540" y="1005" text-anchor="middle" class="small-text">Trimesh格式</text>
+    <text x="540" y="1020" text-anchor="middle" class="small-text">顶点 + 面片</text>
+    <text x="540" y="1035" text-anchor="middle" class="small-text">OBJ/PLY导出</text>
+  </g>
+  
+  <!-- Data Flow Arrows -->
+  <g id="arrows">
+    <!-- Input to Conditioning -->
+    <line x1="125" y1="200" x2="150" y2="270" class="arrow"/>
+    <line x1="295" y1="200" x2="370" y2="270" class="arrow"/>
+    <line x1="465" y1="200" x2="590" y2="270" class="arrow"/>
+    
+    <!-- Conditioning to LoRA -->
+    <line x1="150" y1="370" x2="200" y2="440" class="arrow"/>
+    <line x1="370" y1="370" x2="400" y2="440" class="arrow"/>
+    
+    <!-- LoRA to DiT -->
+    <line x1="200" y1="560" x2="140" y2="630" class="arrow"/>
+    <line x1="400" y1="560" x2="340" y2="630" class="arrow"/>
+    <line x1="495" y1="560" x2="550" y2="630" class="arrow"/>
+    
+    <!-- DiT to Attention -->
+    <line x1="650" y1="670" x2="700" y2="670" class="arrow"/>
+    
+    <!-- Attention to Denoising -->
+    <line x1="800" y1="730" x2="200" y2="800" class="arrow"/>
+    
+    <!-- Denoising to Output -->
+    <line x1="200" y1="900" x2="140" y2="970" class="arrow"/>
+    <line x1="340" y1="900" x2="340" y2="970" class="arrow"/>
+    <line x1="470" y1="900" x2="540" y2="970" class="arrow"/>
+  </g>
+  
+  <!-- LoRA Data Flow -->
+  <g id="lora-flow">
+    <text x="700" y="780" class="subtitle">LoRA数据流</text>
+    <line x1="700" y1="790" x2="1100" y2="790" class="data-flow"/>
+    <text x="900" y="805" text-anchor="middle" class="small-text">LoRA参数影响所有注意力计算</text>
+    
+    <!-- Key LoRA Inputs -->
+    <rect x="700" y="820" width="400" height="120" class="lora-box" rx="5"/>
+    <text x="900" y="840" text-anchor="middle" class="text">LoRA关键输入</text>
+    <text x="900" y="860" text-anchor="middle" class="small-text">• RGB图像特征: contexts['main'] (B, 257, 768)</text>
+    <text x="900" y="875" text-anchor="middle" class="small-text">• 深度条件: contexts['additional']['depth'] (B, 1, 768)</text>
+    <text x="900" y="890" text-anchor="middle" class="small-text">• 多视角特征: contexts['additional'] (B, 1028, 768)</text>
+    <text x="900" y="905" text-anchor="middle" class="small-text">• 时间嵌入: t ∈ [0, 1]</text>
+    <text x="900" y="920" text-anchor="middle" class="small-text">• 潜在变量: latents (B, C, H, W)</text>
+  </g>
+  
+  <!-- Legend -->
+  <g id="legend">
+    <text x="50" y="1100" class="subtitle">图例</text>
+    <rect x="50" y="1110" width="20" height="15" class="input-box"/>
+    <text x="80" y="1122" class="small-text">输入数据</text>
+    <rect x="150" y="1110" width="20" height="15" class="process-box"/>
+    <text x="180" y="1122" class="small-text">处理模块</text>
+    <rect x="250" y="1110" width="20" height="15" class="lora-box"/>
+    <text x="280" y="1122" class="small-text">LoRA相关</text>
+    <rect x="350" y="1110" width="20" height="15" class="output-box"/>
+    <text x="380" y="1122" class="small-text">输出结果</text>
+    <line x1="450" y1="1117" x2="480" y2="1117" class="arrow"/>
+    <text x="490" y="1122" class="small-text">数据流</text>
+    <line x1="530" y1="1117" x2="560" y2="1117" class="data-flow"/>
+    <text x="570" y="1122" class="small-text">LoRA影响</text>
+  </g>
+</svg>
