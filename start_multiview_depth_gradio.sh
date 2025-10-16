@@ -10,29 +10,34 @@ DEVICE="cuda"
 
 # 多视图深度LoRA权重路径（根据实际情况修改）
 # 优先级：Lightning checkpoint (.ckpt) > PEFT格式 (step_*)
-DEPTH_LORA_PATH=""
+DEPTH_LORA_PATH="./hy3dshape/output_folder/dit/depth_lora_finetuning/ckpt/"
 
-# 1. 首先查找Lightning checkpoint (.ckpt文件)
-LIGHTNING_DIRS=(
-    "./hy3dshape/output_folder/dit/depth_lora_finetuning/ckpt"
-    "./output_folder/dit/depth_lora_finetuning/ckpt"
-)
+# 1. 首先检查是否已指定具体的checkpoint路径
+if [ -n "$DEPTH_LORA_PATH" ] && [ -f "$DEPTH_LORA_PATH" ]; then
+    echo "✅ 使用指定的checkpoint: $DEPTH_LORA_PATH"
+else
+    # 2. 如果没有指定或文件不存在，查找Lightning checkpoint (.ckpt文件)
+    LIGHTNING_DIRS=(
+        "./hy3dshape/output_folder/dit/depth_lora_finetuning/ckpt"
+        "./output_folder/dit/depth_lora_finetuning/ckpt"
+    )
 
-echo "正在查找最新的checkpoint..."
-echo "1. 查找Lightning checkpoint (.ckpt)..."
-for dir in "${LIGHTNING_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        # 查找最新的.ckpt文件
-        latest_ckpt=$(ls -t "$dir"/*.ckpt 2>/dev/null | head -n 1)
-        if [ -n "$latest_ckpt" ]; then
-            DEPTH_LORA_PATH="$latest_ckpt"
-            echo "✅ 找到Lightning checkpoint: $DEPTH_LORA_PATH"
-            break
+    echo "正在查找最新的checkpoint..."
+    echo "1. 查找Lightning checkpoint (.ckpt)..."
+    for dir in "${LIGHTNING_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            # 查找最新的.ckpt文件
+            latest_ckpt=$(ls -t "$dir"/*.ckpt 2>/dev/null | head -n 1)
+            if [ -n "$latest_ckpt" ]; then
+                DEPTH_LORA_PATH="$latest_ckpt"
+                echo "✅ 找到Lightning checkpoint: $DEPTH_LORA_PATH"
+                break
+            fi
         fi
-    fi
-done
+    done
+fi
 
-# 2. 如果没有找到Lightning checkpoint，查找PEFT格式
+# 3. 如果没有找到Lightning checkpoint，查找PEFT格式
 if [ -z "$DEPTH_LORA_PATH" ]; then
     echo "2. 查找PEFT格式 LoRA checkpoint (step_*)..."
     PEFT_DIRS=(
