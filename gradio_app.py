@@ -1452,12 +1452,26 @@ if __name__ == '__main__':
                         print("正在替换为DinoImageEncoderMV...")
                         
                         # 创建新的DinoImageEncoderMV encoder
+                        # 检查是否启用Token Merging
+                        enable_token_merging = os.getenv('ENABLE_TOKEN_MERGING', 'false').lower() == 'true'
+                        token_merge_ratio = float(os.getenv('TOKEN_MERGE_RATIO', '0.75'))
+                        token_merge_strategy = os.getenv('TOKEN_MERGE_STRATEGY', 'attention')
+                        
                         new_encoder = DinoImageEncoderMV(
                             version='facebook/dinov2-large',
                             image_size=518,
                             use_cls_token=True,
-                            view_num=4
+                            view_num=4,
+                            enable_token_merging=enable_token_merging,
+                            token_merge_ratio=token_merge_ratio,
+                            token_merge_strategy=token_merge_strategy,
+                            target_tokens=1369
                         )
+                        
+                        if enable_token_merging:
+                            print(f"✅ 已启用Token Merging: 策略={token_merge_strategy}, 减少比例={token_merge_ratio}")
+                        else:
+                            print("ℹ️  Token Merging未启用，使用标准多视图编码")
                         
                         # 如果原encoder有已加载的模型权重，尝试复用
                         if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):

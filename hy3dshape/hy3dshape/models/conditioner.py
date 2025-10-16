@@ -33,6 +33,7 @@ from transformers import (
     Dinov2Config,
 )
 from transformers import AutoImageProcessor, AutoModel
+from .token_merging import AdaptiveTokenMerging, MultiViewTokenMerging
 
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
@@ -141,17 +142,43 @@ class DinoImageEncoderMV(DinoImageEncoder):
         use_cls_token=True,
         image_size=224,
         view_num=4,
+        enable_token_merging=True,
+        token_merge_ratio=0.75,  # Target: 75% reduction in tokens
+        token_merge_strategy="attention",  # "attention", "similarity", "random"
+        target_tokens=1369,  # Target token count (original single-view)
         **kwargs,
     ):
         super().__init__(version, config, use_cls_token, image_size, **kwargs)
         self.view_num = view_num
         self.num_patches = self.num_patches
+        self.enable_token_merging = enable_token_merging
+        self.token_merge_ratio = token_merge_ratio
+        self.token_merge_strategy = token_merge_strategy
+        self.target_tokens = target_tokens
+        
         pos = np.arange(self.view_num, dtype=np.float32)
         view_embedding = torch.from_numpy(
             get_1d_sincos_pos_embed_from_grid(self.model.config.hidden_size, pos)).float()
 
         view_embedding = view_embedding.unsqueeze(1).repeat(1, self.num_patches, 1)
         self.view_embed = view_embedding.unsqueeze(0)
+        
+        # Initialize Token Merging module
+        if self.enable_token_merging:
+            # Calculate target token count based on reduction ratio
+            original_mv_tokens = self.num_patches * self.view_num
+            self.merge_target_tokens = max(
+                self.target_tokens,
+                int(original_mv_tokens * (1 - self.token_merge_ratio))
+            )
+            
+            self.token_merger = MultiViewTokenMerging(
+                dim=self.model.config.hidden_size,
+                num_views=self.view_num,
+                view_merge_ratio=0.5,  # Merge 50% within each view
+                cross_view_merge_ratio=0.25,  # Additional 25% cross-view merging
+                merge_strategy=self.token_merge_strategy
+            )
 
     def forward(self, image, mask=None, value_range=(-1, 1), view_idxs=None, **kwargs):
         if value_range is not None:
@@ -185,8 +212,25 @@ class DinoImageEncoderMV(DinoImageEncoder):
         if num_views != self.view_num:
             view_embedding = view_embedding[:, :num_views, ...]
         last_hidden_state = last_hidden_state + view_embedding
+        
+        # Flatten to single sequence for token merging
+        original_shape = last_hidden_state.shape
         last_hidden_state = last_hidden_state.view(bs, num_views * last_hidden_state.shape[-2],
                                                    last_hidden_state.shape[-1])
+        
+        # Apply Token Merging if enabled
+        if self.enable_token_merging and hasattr(self, 'token_merger'):
+            # Store merge info for potential use in loss computation
+            merged_tokens, merge_weights = self.token_merger(last_hidden_state)
+            
+            # Add merge info to kwargs for potential use in training
+            if 'merge_weights' not in kwargs:
+                kwargs['merge_weights'] = merge_weights
+            if 'original_token_count' not in kwargs:
+                kwargs['original_token_count'] = last_hidden_state.shape[1]
+            
+            last_hidden_state = merged_tokens
+        
         return last_hidden_state
 
     def unconditional_embedding(self, batch_size, view_idxs=None, **kwargs):
@@ -197,9 +241,19 @@ class DinoImageEncoderMV(DinoImageEncoder):
             num_views = self.view_num
         else:
             num_views = len(view_idxs[0])
+        
+        # Calculate token count
+        original_token_count = self.num_patches * num_views
+        
+        if self.enable_token_merging and hasattr(self, 'token_merger'):
+            # Use target token count for unconditional embedding
+            token_count = self.merge_target_tokens
+        else:
+            token_count = original_token_count
+            
         zero = torch.zeros(
             batch_size,
-            self.num_patches * num_views,
+            token_count,
             self.model.config.hidden_size,
             device=device,
             dtype=dtype,

@@ -1,6 +1,7 @@
-name: "HunyuanDiT Multi-View Depth LoRA; VAE: 4096 token length; ImageEncoder: DINO-v2 Large; ImageSize: 518; Views: 4 (front/back/left/right)"
+name: "HunyuanDiT Multi-View Depth LoRA with Token Merging; VAE: 4096 token length; ImageEncoder: DINO-v2 Large; ImageSize: 518; Views: 4 (front/back/left/right); Token Merging: 75% reduction"
 # Multi-View LoRA fine-tuning with depth condition via MultiViewControlNet
-# Enhanced to use 4 viewpoints (front, right, back, left) with attention fusion
+# Enhanced with Token Merging to reduce token count from 5476 to ~1369
+# This configuration is optimized for better compatibility with pre-trained LoRA weights
 
 training:
   steps: 10_0000_0000
@@ -17,7 +18,7 @@ dataset:
   target: hy3dshape.data.dit_asl_multiview.AlignedShapeLatentMultiViewModule
   params:
     #! Base setting
-    batch_size: 2  # 降低batch size因为每个样本包含4个视图
+    batch_size: 3  # 可以稍微增加batch size，因为token数量减少了
     num_workers: 8
     val_num_workers: 4
 
@@ -85,11 +86,11 @@ model:
                 image_size: 518
                 use_cls_token: true
                 view_num: 4  # Number of input views for DINO encoder
-                # Token Merging Configuration
-                enable_token_merging: true  # Enable Token Merging to reduce token count
-                token_merge_ratio: 0.75     # Target: 75% reduction in tokens (5476 -> ~1369)
-                token_merge_strategy: "attention"  # "attention", "similarity", "random"
-                target_tokens: 1369         # Target token count (original single-view count)
+                # Token Merging Configuration - 核心优化参数
+                enable_token_merging: true  # 启用Token Merging
+                token_merge_ratio: 0.75     # 目标：75%的token减少 (5476 -> ~1369)
+                token_merge_strategy: "attention"  # 使用注意力机制的合并策略
+                target_tokens: 1369         # 目标token数量（原始单视图数量）
 
     denoiser_cfg:
       target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
@@ -155,7 +156,7 @@ callbacks:
     peft_save:
       target: hy3dshape.utils.trainings.peft.PeftSaveCallback
       params:
-        save_dir: "output_folder/dit/multiview_depth_lora_checkpoints"
+        save_dir: "output_folder/dit/multiview_depth_lora_tome_checkpoints"
         save_every_n_steps: 1000
     
     file_loggers:
