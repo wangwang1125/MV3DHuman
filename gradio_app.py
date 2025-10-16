@@ -257,20 +257,30 @@ def load_depth_from_16bit_png(depth_file_path, target_size=518):
         raise gr.Error(f"无法处理深度图文件: {str(e)}")
 
 
-def load_multiview_depths(depth_files_dict, target_size=518):
+def load_multiview_depths(depth_files_dict, target_size=518, num_views=None):
     """
     加载多视图深度图（适用于多视图深度训练模式）
     
     Args:
         depth_files_dict: 包含各个视图深度图文件的字典 {'front': file, 'right': file, 'back': file, 'left': file}
         target_size: 目标图像尺寸
+        num_views: 期望的视图数量，如果为None则使用实际提供的视图数量
     
     Returns:
         torch.Tensor: 多视图深度图张量，形状为 (1, num_views, 1, H, W)
-                      其中 1 是 batch_size，num_views 是视图数量（最多4个）
+                      其中 1 是 batch_size，num_views 是视图数量
     """
-    # 按照训练代码中的顺序：front(0), right(1), back(2), left(3)
-    view_order = ['front', 'right', 'back', 'left']
+    # 根据num_views参数确定视图顺序
+    if num_views == 2:
+        # 双视图模式：front, right
+        view_order = ['front', 'right']
+    elif num_views == 3:
+        # 三视图模式：front, right, back
+        view_order = ['front', 'right', 'back']
+    else:
+        # 默认四视图模式：front, right, back, left
+        view_order = ['front', 'right', 'back', 'left']
+    
     depth_tensors = []
     
     for view_name in view_order:
@@ -290,7 +300,7 @@ def load_multiview_depths(depth_files_dict, target_size=518):
     multiview_depth = torch.stack(depth_tensors, dim=0)  # (num_views, 1, H, W)
     # 添加 batch 维度以匹配 ControlNet 的期望输入格式
     multiview_depth = multiview_depth.unsqueeze(0)  # (1, num_views, 1, H, W)
-    print(f"多视图深度图张量形状: {multiview_depth.shape}")
+    print(f"多视图深度图张量形状: {multiview_depth.shape} (视图数量: {len(view_order)})")
     
     return multiview_depth
 
@@ -480,7 +490,7 @@ def _gen_shape(
                 depth_files_dict['left'] = mv_depth_left
             
             # 加载多视图深度图
-            depth_tensor = load_multiview_depths(depth_files_dict, target_size=518)
+            depth_tensor = load_multiview_depths(depth_files_dict, target_size=518, num_views=args.num_views)
             
             if args.device == 'cuda':
                 depth_tensor = depth_tensor.cuda()
@@ -721,7 +731,7 @@ def build_app():
 
     # 根据模式调整标题
     if MULTIVIEW_DEPTH_MODE:
-        title += " (多视图深度条件模式)"
+        title += f" (多视图深度条件模式 - {args.num_views}视图)"
     elif DEPTH_MODE:
         title += " (单视图深度条件模式)"
     elif MV_MODE:
@@ -829,43 +839,88 @@ def build_app():
                         
                         # 如果启用多视图深度模式，添加深度图上传组件
                         if MULTIVIEW_DEPTH_MODE and DEPTH_MODE:
-                            gr.Markdown("### 深度图 (16位PNG)")
-                            with gr.Row():
-                                mv_depth_front = gr.File(
-                                    label="Front Depth",
-                                    file_types=[".png", ".tiff", ".tif"],
-                                    type="filepath",
-                                    interactive=True
-                                )
-                                mv_depth_back = gr.File(
-                                    label="Back Depth",
-                                    file_types=[".png", ".tiff", ".tif"],
-                                    type="filepath",
-                                    interactive=True
-                                )
-                            with gr.Row():
-                                mv_depth_left = gr.File(
-                                    label="Left Depth",
-                                    file_types=[".png", ".tiff", ".tif"],
-                                    type="filepath",
-                                    interactive=True
-                                )
-                                mv_depth_right = gr.File(
-                                    label="Right Depth",
-                                    file_types=[".png", ".tiff", ".tif"],
-                                    type="filepath",
-                                    interactive=True
-                                )
+                            gr.Markdown(f"### 深度图 (16位PNG) - {args.num_views}视图模式")
+                            
+                            # 根据视图数量动态创建上传组件
+                            if args.num_views == 2:
+                                with gr.Row():
+                                    mv_depth_front = gr.File(
+                                        label="Front Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_depth_right = gr.File(
+                                        label="Right Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                mv_depth_back = gr.State(None)
+                                mv_depth_left = gr.State(None)
+                                view_info = "视图顺序: Front(0°) → Right(90°)\n"
+                            elif args.num_views == 3:
+                                with gr.Row():
+                                    mv_depth_front = gr.File(
+                                        label="Front Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_depth_right = gr.File(
+                                        label="Right Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                with gr.Row():
+                                    mv_depth_back = gr.File(
+                                        label="Back Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_depth_left = gr.State(None)
+                                view_info = "视图顺序: Front(0°) → Right(90°) → Back(180°)\n"
+                            else:  # 4 views
+                                with gr.Row():
+                                    mv_depth_front = gr.File(
+                                        label="Front Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_depth_back = gr.File(
+                                        label="Back Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                with gr.Row():
+                                    mv_depth_left = gr.File(
+                                        label="Left Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_depth_right = gr.File(
+                                        label="Right Depth",
+                                        file_types=[".png", ".tiff", ".tif"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                view_info = "视图顺序: Front(0°) → Right(90°) → Back(180°) → Left(270°)\n"
+                            
                             gr.Markdown(
-                                "📋 **多视图深度图要求:**\n"
-                                "- 格式: 16位PNG、TIFF或TIF文件\n" 
-                                "- 尺寸: 建议与RGB图像相同\n"
-                                "- 视图顺序: Front(0°) → Right(90°) → Back(180°) → Left(270°)\n"
-                                "- 至少提供一个视图的深度图\n\n"
-                                "💡 **使用提示:**\n"
-                                "1. 按顺序上传各视图的RGB图像\n"
-                                "2. 上传对应视图的深度图文件\n" 
-                                "3. 点击生成按钮开始处理"
+                                f"📋 **多视图深度图要求 ({args.num_views}视图模式):**\n"
+                                f"- 格式: 16位PNG、TIFF或TIF文件\n" 
+                                f"- 尺寸: 建议与RGB图像相同\n"
+                                f"- {view_info}"
+                                f"- 至少提供一个视图的深度图\n\n"
+                                f"💡 **使用提示:**\n"
+                                f"1. 按顺序上传各视图的RGB图像\n"
+                                f"2. 上传对应视图的深度图文件\n" 
+                                f"3. 点击生成按钮开始处理"
                             )
                         else:
                             # 创建占位符状态变量
@@ -1124,6 +1179,7 @@ if __name__ == '__main__':
     parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
     parser.add_argument('--enable_multiview_depth', action='store_true', help='Enable multi-view depth-conditioned model')
     parser.add_argument('--depth_lora_path', type=str, default="./hy3dshape/output_folder/dit/depth_lora_checkpoints/ckpt/ckpt-step=00000200.ckpt", help='Path to depth LoRA checkpoint')
+    parser.add_argument('--num_views', type=int, default=4, help='Number of views for multi-view depth model (default: 4)')
     args = parser.parse_args()
     args.enable_flashvdm = False
 
@@ -1325,15 +1381,28 @@ if __name__ == '__main__':
                         if controlnet_keys:
                             try:
                                 print("\n正在加载ControlNet权重...")
+                                # 从checkpoint中检测视图数量
+                                detected_num_views = args.num_views  # 默认值
+                                for key in controlnet_keys:
+                                    if 'view_embeddings.weight' in key:
+                                        # 从view_embeddings.weight的形状推断视图数量
+                                        weight_shape = state_dict[key].shape
+                                        if len(weight_shape) >= 2:
+                                            detected_num_views = weight_shape[0]
+                                            print(f"  🔍 从checkpoint检测到视图数量: {detected_num_views}")
+                                            # 更新args.num_views以便其他组件使用
+                                            args.num_views = detected_num_views
+                                        break
+                                
                                 # 检查pipeline是否有controlnet（可能需要重新创建）
                                 if not hasattr(i23d_worker, 'controlnet') or i23d_worker.controlnet is None:
                                     print("  Pipeline中没有controlnet，尝试创建...")
-                                    # 创建MultiViewDepthControlNet
+                                    # 创建MultiViewDepthControlNet，使用检测到的视图数量
                                     try:
                                         from hy3dshape.models.controlnet_multiview import create_multiview_depth_controlnet
                                         i23d_worker.controlnet = create_multiview_depth_controlnet(
                                             in_channels=1,
-                                            num_views=4,
+                                            num_views=detected_num_views,
                                             out_channels=768,
                                             fusion_strategy='attention'
                                         )
@@ -1342,7 +1411,7 @@ if __name__ == '__main__':
                                             device=args.device,
                                             dtype=i23d_worker.dtype
                                         )
-                                        print(f"  ✅ MultiViewDepthControlNet已创建并移至 {args.device}, 数据类型: {i23d_worker.dtype}")
+                                        print(f"  ✅ MultiViewDepthControlNet已创建并移至 {args.device}, 数据类型: {i23d_worker.dtype}, 视图数量: {detected_num_views}")
                                     except Exception as create_error:
                                         print(f"  ❌ 创建ControlNet失败: {create_error}")
                                         import traceback
@@ -1451,12 +1520,12 @@ if __name__ == '__main__':
                         print(f"检测到当前encoder类型: {type(current_encoder).__name__}")
                         print("正在替换为DinoImageEncoderMV...")
                         
-                        # 创建新的DinoImageEncoderMV encoder
+                        # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
                         new_encoder = DinoImageEncoderMV(
                             version='facebook/dinov2-large',
                             image_size=518,
                             use_cls_token=True,
-                            view_num=4
+                            view_num=args.num_views
                         )
                         
                         # 如果原encoder有已加载的模型权重，尝试复用
@@ -1472,7 +1541,7 @@ if __name__ == '__main__':
                         
                         # 替换encoder
                         i23d_worker.conditioner.main_image_encoder = new_encoder
-                        print("✅ 已成功替换为DinoImageEncoderMV")
+                        print(f"✅ 已成功替换为DinoImageEncoderMV (视图数量: {args.num_views})")
     else:
         print("正在加载标准RGB模型...")
         i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(

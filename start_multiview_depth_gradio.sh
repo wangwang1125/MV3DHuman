@@ -85,5 +85,6 @@ python gradio_app.py \
     $LORA_ARG \
     --port $PORT \
     --host "$HOST" \
-    --device "$DEVICE"
+    --device "$DEVICE"\
+    --num_views 2
 
