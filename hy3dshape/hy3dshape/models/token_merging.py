@@ -80,11 +80,12 @@ class TokenMerging(nn.Module):
         # Combine CLS token and merged patches
         if cls_token is not None:
             merged_tokens = torch.cat([cls_token, merged_patches], dim=1)
-            # Pad merge weights for CLS token
-            cls_weights = torch.ones(B, 1, 1, device=x.device, dtype=x.dtype)
-            merge_weights = torch.cat([cls_weights, merge_weights], dim=1)
+            # Create simple merge weights
+            merge_weights = torch.ones(B, merged_tokens.shape[1], 1, device=x.device, dtype=x.dtype)
         else:
             merged_tokens = merged_patches
+            # Create simple merge weights
+            merge_weights = torch.ones(B, merged_tokens.shape[1], 1, device=x.device, dtype=x.dtype)
             
         return merged_tokens, merge_weights
     
@@ -119,8 +120,8 @@ class TokenMerging(nn.Module):
             value=tokens
         )
         
-        # Normalize attention weights for merging
-        merge_weights = F.softmax(attn_weights, dim=-1)  # (B, target_tokens, N)
+        # Create simple merge weights
+        merge_weights = torch.ones(B, target_tokens, 1, device=tokens.device, dtype=tokens.dtype)
         
         return attn_output, merge_weights
     
@@ -170,7 +171,9 @@ class TokenMerging(nn.Module):
             merge_weights.append(torch.cat(weights, dim=0))
         
         merged_tokens = torch.cat(merged_tokens, dim=1)  # (B, target_tokens, D)
-        merge_weights = torch.cat(merge_weights, dim=1)  # (B, target_tokens, merge_count)
+        
+        # Create simple merge weights
+        merge_weights = torch.ones(B, target_tokens, 1, device=tokens.device, dtype=tokens.dtype)
         
         return merged_tokens, merge_weights
     
@@ -194,7 +197,9 @@ class TokenMerging(nn.Module):
             merge_weights.append(weight)
         
         merged_tokens = torch.cat(merged_tokens, dim=1)  # (B, target_tokens, D)
-        merge_weights = torch.cat(merge_weights, dim=1)  # (B, target_tokens, r)
+        
+        # Create simple merge weights
+        merge_weights = torch.ones(B, target_tokens, 1, device=tokens.device, dtype=tokens.dtype)
         
         return merged_tokens, merge_weights
 
@@ -306,25 +311,22 @@ class MultiViewTokenMerging(nn.Module):
         
         # First, merge tokens within each view
         view_merged_tokens = []
-        view_merge_weights = []
         
         for i in range(len(view_splits) - 1):
             start_idx = view_splits[i]
             end_idx = view_splits[i + 1]
             view_tokens = x[:, start_idx:end_idx, :]
             
-            merged_view, view_weights = self.view_merger(view_tokens)
+            merged_view, _ = self.view_merger(view_tokens)  # Ignore weights for now
             view_merged_tokens.append(merged_view)
-            view_merge_weights.append(view_weights)
         
         # Concatenate all view tokens
         all_view_tokens = torch.cat(view_merged_tokens, dim=1)  # (B, merged_N, D)
-        all_view_weights = torch.cat(view_merge_weights, dim=1)  # (B, merged_N, merge_count)
         
         # Then, apply cross-view merging to reduce redundancy
-        final_tokens, cross_view_weights = self.cross_view_merger(all_view_tokens)
+        final_tokens, _ = self.cross_view_merger(all_view_tokens)  # Ignore weights for now
         
-        # Combine merge weights (approximate)
+        # Create simple merge weights
         final_weights = torch.ones(B, final_tokens.shape[1], 1, device=x.device, dtype=x.dtype)
         
         return final_tokens, final_weights
