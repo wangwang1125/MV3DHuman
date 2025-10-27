@@ -54,13 +54,15 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         deterministic = False,
         worker_seed = None,
         padding = True,
-        padding_ratio_range=[1.15, 1.15],
+        padding_ratio_range=[1, 1],
         load_depth: bool = False,
+        load_normal: bool = False,
         multiview_indices: List[int] = [0, 6, 12, 18],  # 前后左右四个视图的索引 (0°, 90°, 180°, 270°)
-        depth_fusion_strategy: str = "multiview"  # "multiview" (keep all views), "average", "max", "weighted"
+        depth_fusion_strategy: str = "multiview",  # "multiview" (keep all views), "average", "max", "weighted"
+        normal_fusion_strategy: str = "multiview"  # For normal maps, keep all views for DinoImageEncoderMV
     ):
         """
-        Multi-view dataset for loading front/back/left/right views with depth maps
+        Multi-view dataset for loading front/back/left/right views with depth maps and normal maps
         
         Args:
             multiview_indices: List of camera view indices to use. Default [0, 6, 12, 18] 
@@ -88,8 +90,10 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         self.padding = padding
         self.padding_ratio_range = padding_ratio_range
         self.load_depth = load_depth
+        self.load_normal = load_normal
         self.multiview_indices = multiview_indices
         self.depth_fusion_strategy = depth_fusion_strategy
+        self.normal_fusion_strategy = normal_fusion_strategy
         
         rank_zero_info(f'*' * 50)
         rank_zero_info(f'Multi-View Dataset Infos:')
@@ -98,6 +102,7 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         rank_zero_info(f'# of Sharpedge Surface Points: {self.pc_sharpedge_size}')
         rank_zero_info(f'Using sharp edge label: {self.sharpedge_label}')
         rank_zero_info(f'Load depth maps: {self.load_depth}')
+        rank_zero_info(f'Load normal maps: {self.load_normal}')
         rank_zero_info(f'Multi-view indices: {self.multiview_indices} (total {len(self.multiview_indices)} views)')
         rank_zero_info(f'*' * 50)
 
@@ -145,14 +150,24 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
                 continue
                 
             image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-            assert image.shape[2] == 4
-            alpha = image[:, :, 3:4].astype(np.float32) / 255
-            forground = image[:, :, :3]
-            background = np.ones_like(forground) * 255
-            img_new = forground * alpha + background * (1 - alpha)
-            image = img_new.astype(np.uint8)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            mask = (alpha[:, :, 0] * 255).astype(np.uint8)
+            
+            # Handle both 3-channel (RGB) and 4-channel (RGBA) images
+            if image.shape[2] == 4:
+                # RGBA image - handle alpha channel
+                alpha = image[:, :, 3:4].astype(np.float32) / 255
+                forground = image[:, :, :3]
+                background = np.ones_like(forground) * 255
+                img_new = forground * alpha + background * (1 - alpha)
+                image = img_new.astype(np.uint8)
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                mask = (alpha[:, :, 0] * 255).astype(np.uint8)
+            elif image.shape[2] == 3:
+                # RGB image (e.g., normal maps) - no alpha channel
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                # Create a default mask (all ones) for RGB images
+                mask = np.ones((image.shape[0], image.shape[1]), dtype=np.uint8) * 255
+            else:
+                raise ValueError(f"Unsupported image channels: {image.shape[2]} in {image_path}")
 
             if self.padding:
                 h, w = image.shape[:2]
@@ -348,6 +363,16 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
                 depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in range(24)]
             sample["depth"] = depth_img_paths
         
+        # Load normal maps if enabled
+        if self.load_normal:
+            if self.multiview_indices is not None and len(self.multiview_indices) > 0:
+                # 使用配置的multiview_indices
+                normal_img_paths = [os.path.join(item, f'render_cond/{i:03d}_normal.png') for i in self.multiview_indices]
+            else:
+                # 如果没有设置multiview_indices，使用默认的24个视图
+                normal_img_paths = [os.path.join(item, f'render_cond/{i:03d}_normal.png') for i in range(24)]
+            sample["normal"] = normal_img_paths
+        
         surface_data = read_npz(surface_npz_path)
         sample["random_surface"] = surface_data['random_surface']
         sample["sharpedge_surface"] = surface_data['sharp_surface']
@@ -374,6 +399,13 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         if self.load_depth and "depth" in sample:
             depth_input = self.load_multiview_depth_maps(sample['depth'])
             result_sample["depth"] = depth_input  # Shape: (num_views, 1, H, W) - multi-view depths
+        
+        # Load and process multi-view normal maps if enabled
+        # Normal maps are processed like RGB images using load_multiview_render
+        if self.load_normal and "normal" in sample:
+            normal_input, normal_mask = self.load_multiview_render(sample['normal'])
+            result_sample["normal"] = normal_input  # Shape: (num_views, C, H, W) - multi-view normals as RGB
+            result_sample["normal_mask"] = normal_mask  # Shape: (num_views, 1, H, W)
         
         return result_sample
 
@@ -412,10 +444,12 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         sharpedge_label: bool = False,
         return_normal: bool = False, 
         padding = True,
-        padding_ratio_range=[1.15, 1.15],
+        padding_ratio_range=[1, 1],
         load_depth: bool = False,
+        load_normal: bool = False,
         multiview_indices: List[int] = [0, 6, 12, 18],  # 前后左右四个视图
-        depth_fusion_strategy: str = "multiview"  # 深度融合策略
+        depth_fusion_strategy: str = "multiview",  # 深度融合策略
+        normal_fusion_strategy: str = "multiview"  # 法线图融合策略
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -446,8 +480,10 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         self.padding = padding
         self.padding_ratio_range = padding_ratio_range
         self.load_depth = load_depth
+        self.load_normal = load_normal
         self.multiview_indices = multiview_indices
         self.depth_fusion_strategy = depth_fusion_strategy
+        self.normal_fusion_strategy = normal_fusion_strategy
         
     def train_dataloader(self):
         asl_params = {
@@ -461,8 +497,10 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "padding": self.padding,
             "padding_ratio_range": self.padding_ratio_range,
             "load_depth": self.load_depth,
+            "load_normal": self.load_normal,
             "multiview_indices": self.multiview_indices,
-            "depth_fusion_strategy": self.depth_fusion_strategy
+            "depth_fusion_strategy": self.depth_fusion_strategy,
+            "normal_fusion_strategy": self.normal_fusion_strategy
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
@@ -486,8 +524,10 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "padding": self.padding,
             "padding_ratio_range": self.padding_ratio_range,
             "load_depth": self.load_depth,
+            "load_normal": self.load_normal,
             "multiview_indices": self.multiview_indices,
-            "depth_fusion_strategy": self.depth_fusion_strategy
+            "depth_fusion_strategy": self.depth_fusion_strategy,
+            "normal_fusion_strategy": self.normal_fusion_strategy
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(

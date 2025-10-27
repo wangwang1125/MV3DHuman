@@ -22,8 +22,8 @@ dataset:
     val_num_workers: 4
 
     # Data paths
-    train_data_list: tools/mini_mv_depth_trainset/preprocessed
-    val_data_list: tools/mini_mv_depth_testset/preprocessed
+    train_data_list: tools/mini_mv_trainset/preprocessed
+    val_data_list: tools/mini_mv_testset/preprocessed
 
     #! Multi-view configuration
     multiview_indices: [0, 1, 2, 3]  # 前(0°), 右(90°), 后(180°), 左(270°)四个视图

@@ -122,7 +122,7 @@ def four_view_camera_sequence():
     pitchs = [0, 0, 0, 0]
     
     # 固定相机距离
-    radius = [2.0 for i in range(4)]
+    radius = [1.4 for i in range(4)]
     
     # 固定FOV，使用透视投影
     fov = [0.8 for i in range(4)]  # 约45度视角
@@ -284,8 +284,7 @@ def switch_to_color_render(output_nodes):
 #     normal = ((normal * 0.5 + 0.5) * 255).astype('uint8')
 #     cv2.imwrite(output_jpg, normal)
 
-
-def ConvertNormalMap(input_exr, output_jpg):
+def ConvertNormalMap_png(input_exr, output_jpg):
     # Read EXR file with OpenCV (returns float32 image)
     exr_img = cv2.imread(input_exr, cv2.IMREAD_UNCHANGED)
     if exr_img is None:
@@ -301,121 +300,301 @@ def ConvertNormalMap(input_exr, output_jpg):
     normal = ((exr_img * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
     cv2.imwrite(output_jpg, normal)
     print(f"Saved normal map to {output_jpg}")
-
-
-gidx = 0
-def ConvertDepthMap(input_exr, output_png):
-    import bpy
     
-    # cam = bpy.data.objects.get('Camera')
-    cams = [obj for obj in bpy.data.objects if obj.type == 'CAMERA']
-    print("All cameras in scene:")
-    if not cams:
-        raise RuntimeError("No camera objects found in the scene")
-    for c in cams:
-        print(f"  {c.name} - type: {c.type}")
-    cam = cams[0]
     
-    print('cam', cam)
-    print('cam.type', cam.type)  # should be 'CAMERA'
-    print('cam_data', cam.data)  # should not be None
-    print(f"Using camera: {cam.name}")
-
-    cam_data = cam.data
+def ConvertNormalMap(input_exr, output_png, depth_exr=None, normalize_to_front=False, view_index=0):
+    """
+    转换法线图从EXR到PNG格式，参考visualize_normal.py的处理逻辑
+    使用OpenEXR库正确读取X、Y、Z通道的法线数据
     
-    exr_img = cv2.imread(input_exr, cv2.IMREAD_UNCHANGED)
-    if exr_img is None:
-        raise RuntimeError(f"Failed to load EXR file: {input_exr}")
-
-    print(f"EXR shape: {exr_img.shape}, dtype: {exr_img.dtype}")
-
-    depth_channel = exr_img[:, :, 0] if exr_img.ndim == 3 else exr_img
-
-    # filter 
-    depth_channel = depth_channel.copy()
-    depth_channel[depth_channel > 1e4] = 0
-
-    extrinsic_matrix = np.array(cam.matrix_world.copy())
-
-    scene = bpy.context.scene
-    render = scene.render
-    cam_data = cam.data
-
-    resolution_x = render.resolution_x * render.pixel_aspect_x
-    resolution_y = render.resolution_y * render.pixel_aspect_y
-
-    cx = resolution_x / 2.0
-    cy = resolution_y / 2.0
-
-    if cam_data.type == 'ORTHO':
-        aspect_ratio = render.resolution_x / render.resolution_y
-        ortho_scale = cam_data.ortho_scale
-        near = cam_data.clip_start
-        far = cam_data.clip_end
-
-        left = -ortho_scale / 2
-        right = ortho_scale / 2
-        top = (ortho_scale / 2) / aspect_ratio
-        bottom = -top
-
-        proj_matrix = np.array((
-            (2/(right-left), 0, 0, -(right+left)/(right-left)),
-            (0, 2/(top-bottom), 0, -(top+bottom)/(top-bottom)),
-            (0, 0, -2/(far-near), -(far+near)/(far-near)),
-            (0, 0, 0, 1)
-        ))
-    else:
-        if cam_data.sensor_fit == 'VERTICAL':
-            sensor_size = cam_data.sensor_height
-            fit = 'VERTICAL'
+    Args:
+        input_exr: 法线图EXR文件路径
+        output_png: 输出PNG文件路径
+        depth_exr: 深度图EXR文件路径（用于生成遮罩）
+        normalize_to_front: 是否将法线标准化为正视图方向
+        view_index: 当前视角索引（0为正视图）
+    """
+    try:
+        import OpenEXR
+        import Imath
+        HAS_OPENEXR = True
+    except ImportError:
+        HAS_OPENEXR = False
+        print("⚠️  OpenEXR库未安装，将使用OpenCV读取EXR文件")
+    
+    normal = None
+    
+    # 优先使用OpenEXR库读取法线数据
+    if HAS_OPENEXR:
+        try:
+            exr_file = OpenEXR.InputFile(input_exr)
+            header = exr_file.header()
+            
+            # 获取图像尺寸
+            dw = header['dataWindow']
+            width = dw.max.x - dw.min.x + 1
+            height = dw.max.y - dw.min.y + 1
+            
+            # 读取法线通道 (X, Y, Z)
+            channels = ['X', 'Y', 'Z']
+            channel_data = {}
+            
+            for channel in channels:
+                if channel in header['channels']:
+                    channel_str = exr_file.channel(channel, Imath.PixelType(Imath.PixelType.FLOAT))
+                    channel_data[channel] = np.frombuffer(channel_str, dtype=np.float32)
+                    channel_data[channel] = channel_data[channel].reshape((height, width))
+                else:
+                    # 如果某个通道不存在，用0填充
+                    channel_data[channel] = np.zeros((height, width), dtype=np.float32)
+            
+            # 组合成3通道图像 (X, Y, Z)
+            normal = np.stack([channel_data['X'], channel_data['Y'], channel_data['Z']], axis=2)
+            exr_file.close()
+            
+            print(f"✅ OpenEXR成功读取法线: {normal.shape}, dtype: {normal.dtype}")
+            
+        except Exception as e:
+            print(f"⚠️  OpenEXR读取失败: {e}，尝试OpenCV...")
+    
+    # 如果OpenEXR失败，使用OpenCV作为备用
+    if normal is None:
+        exr_img = cv2.imread(input_exr, cv2.IMREAD_UNCHANGED)
+        if exr_img is None:
+            raise RuntimeError(f"Failed to load EXR file: {input_exr}")
+        print(f"EXR shape: {exr_img.shape}, dtype: {exr_img.dtype}")
+        
+        # Handle different channel counts
+        if len(exr_img.shape) == 3 and exr_img.shape[2] == 2:
+            # 2-channel normal map: add a third channel (Z component)
+            z_channel = np.sqrt(np.maximum(0, 1 - exr_img[:,:,0]**2 - exr_img[:,:,1]**2))
+            exr_img = np.dstack([exr_img, z_channel])
+        
+        normal = exr_img
+    
+    # 处理无效值
+    normal = np.nan_to_num(normal, nan=0.0, posinf=1.0, neginf=-1.0)
+    
+    # 检查数据范围，判断是否需要从[0,1]转换到[-1,1]
+    data_min = normal.min()
+    data_max = normal.max()
+    
+    # 检查是否有有效数据（非零值）
+    non_zero_mask = np.any(normal != 0, axis=2)
+    non_zero_count = np.sum(non_zero_mask)
+    
+    print(f"📊 处理前数据范围: [{data_min:.6f}, {data_max:.6f}]")
+    print(f"📊 非零像素: {non_zero_count} / {normal.size//3} ({non_zero_count/(normal.size//3)*100:.2f}%)")
+    
+    if non_zero_count > 0:
+        # 如果有非零数据，检查数据范围
+        if data_min >= 0.0 and data_max <= 1.0:
+            print(f"🔄 检测到[0,1]范围数据，转换到[-1,1]")
+            normal = normal * 2.0 - 1.0
+        elif data_min >= -1.0 and data_max <= 1.0:
+            print(f"✅ 数据已在[-1,1]范围内")
         else:
-            sensor_size = cam_data.sensor_width
-            fit = 'HORIZONTAL'
-
-        focal_length = cam_data.lens
-
-        if fit == 'HORIZONTAL':
-            scale = resolution_x / sensor_size
-        else:
-            scale = resolution_y / sensor_size
-
-        fx = focal_length * scale
-        fy = focal_length * scale
-
-        K = np.array([
-            [fx, 0,  cx],
-            [0,  fy, cy],
-            [0,  0,   1]
-        ])
-
-    mask = (depth_channel.reshape(-1) == 0)
-    jj, ii = np.meshgrid(np.arange(resolution_x), np.arange(resolution_y))
-    jj = jj + 0.5
-    ii = ii + 0.5
-
-    if cam_data.type == 'ORTHO':
-        cam_pos = np.stack((
-            (jj - cx) * (1.0 / (resolution_x - 1) * ortho_scale),
-            (ii - cy) * (1.0 / (resolution_y - 1) * ortho_scale),
-            depth_channel
-        ), axis=-1)
+            print(f"⚠️  数据范围异常: [{data_min:.6f}, {data_max:.6f}]")
+            print(f"🔄 尝试归一化到[-1,1]范围")
+            # 尝试归一化到[-1,1]范围
+            if data_max > data_min:
+                normal = 2.0 * (normal - data_min) / (data_max - data_min) - 1.0
     else:
-        image_pos = np.stack((jj * depth_channel, ii * depth_channel, depth_channel), axis=-1)
-        cam_pos = image_pos @ np.linalg.inv(K).T
-
-    cam_pos[..., 1:] = -cam_pos[..., 1:]
-
-    # Generate proper depth map with original depth values
-    depth_output = depth_channel.copy()
+        print(f"⚠️  警告: 没有检测到有效数据，所有像素都是0")
     
-    # Set background (non-mesh) areas to 0
-    depth_output[mask.reshape(depth_channel.shape)] = 0
+    # 最终裁剪到[-1,1]范围
+    normal = np.clip(normal, -1.0, 1.0)
     
-    # Save as 32-bit float PNG to preserve original depth values
-    # Convert to 16-bit for better precision while keeping file size reasonable
-    depth_output_16bit = (depth_output * 1000).astype(np.uint16)  # Scale by 1000 for millimeter precision
-    cv2.imwrite(output_png, depth_output_16bit)
-    print(f"Saved depth map to {output_png} (16-bit, scaled by 1000)")
+    # 如果需要标准化为正视图方向
+    if normalize_to_front:
+        print("🔄 标准化法线为正视图方向...")
+        # 获取当前相机的变换矩阵
+        cam = bpy.context.scene.camera
+        if cam:
+            # 获取相机的世界变换矩阵
+            cam_matrix = cam.matrix_world
+            # 提取相机的旋转部分（3x3矩阵）
+            cam_rotation = cam_matrix.to_3x3()
+            
+            # 将Blender Matrix转换为numpy数组
+            cam_rotation_np = np.array(cam_rotation)
+            
+            # 检查是否是正视图（索引0）
+            if view_index == 0:
+                print("✅ 检测到正视图（索引0），跳过标准化（保持原始法线）")
+            else:
+                print(f"📐 检测到非正视图（索引{view_index}），进行标准化...")
+                
+                # 将法线从当前相机空间转换到正视图相机空间
+                # normal的shape是 (H, W, 3)，需要reshape为 (H*W, 3) 进行矩阵乘法
+                original_shape = normal.shape
+                normal_flat = normal.reshape(-1, 3)
+                
+                # 计算从当前相机空间到正视图相机空间的转换矩阵
+                # 当前相机空间 -> 世界空间 -> 正视图相机空间
+                # 当前相机旋转矩阵的逆矩阵 = 从当前相机空间到世界空间
+                # 正视图相机旋转矩阵 = 从世界空间到正视图相机空间
+                
+                # 正视图相机的旋转矩阵（标准正视图方向）
+                # 正视图相机朝向-Z方向，向上为+Y方向，向右为+X方向
+                front_view_rotation = np.array([
+                    [1, 0, 0],   # X轴（右）
+                    [0, 0, 1],   # Y轴（上，但在Blender中Z是上）
+                    [0, -1, 0]   # Z轴（前，朝向相机，但在Blender中-Y是前）
+                ])
+                
+                # 计算转换矩阵：当前相机空间 -> 世界空间 -> 正视图相机空间
+                # cam_rotation_np 是从世界空间到当前相机空间的变换
+                # 所以 cam_rotation_np.T 是从当前相机空间到世界空间的变换
+                # front_view_rotation 是从世界空间到正视图相机空间的变换
+                world_to_front = front_view_rotation @ cam_rotation_np.T
+                
+                # 应用转换矩阵，将法线转换到正视图相机空间
+                normal_front_space = np.dot(normal_flat, world_to_front)
+                
+                # 重新reshape回原始形状
+                normal = normal_front_space.reshape(original_shape)
+                
+                # 调试信息：显示转换前后的法线范围
+                if np.any(normal != 0):
+                    print(f"   转换后法线范围: X[{normal[:,:,0].min():.3f}, {normal[:,:,0].max():.3f}], "
+                          f"Y[{normal[:,:,1].min():.3f}, {normal[:,:,1].max():.3f}], "
+                          f"Z[{normal[:,:,2].min():.3f}, {normal[:,:,2].max():.3f}]")
+                
+                print(f"✅ 法线已标准化为正视图方向")
+        else:
+            print("⚠️  无法获取相机信息，跳过标准化")
+    
+    # 创建遮罩：使用深度图或法线图本身
+    if depth_exr and os.path.exists(depth_exr):
+        # 使用深度图创建遮罩
+        print(f"使用深度图遮罩: {depth_exr}")
+        depth = cv2.imread(depth_exr, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+        if depth is not None:
+            # 如果是多通道，取第一个通道
+            if len(depth.shape) == 3:
+                depth = depth[:, :, 0]
+            
+            # 处理无效值（与深度图转换逻辑一致）
+            depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+            depth[depth > 100.0] = 0.0  # 超过100米视为无效
+            depth[depth < 0] = 0.0      # 负值视为无效
+            
+            # 创建有效区域遮罩
+            valid_mask = depth > 0
+        else:
+            print("⚠️  深度图读取失败，使用法线图自身遮罩")
+            normal_magnitude = np.linalg.norm(normal, axis=2)
+            valid_mask = normal_magnitude > 0.001
+    else:
+        # 使用法线图自身创建遮罩
+        print("使用法线图自身遮罩")
+        normal_magnitude = np.linalg.norm(normal, axis=2)
+        valid_mask = normal_magnitude > 0.001
+    
+    # 将法线从 [-1, 1] 范围转换到 [0, 1] 范围
+    normal_01 = normal * 0.5 + 0.5
+    
+    # 坐标系统转换：Blender -> 标准法线图格式
+    # 标准法线图：R=X(右), G=Y(上), B=Z(前)
+    # Blender法线：X=右, Y=前, Z=上
+    # 需要重新排列：R=Blender_X, G=Blender_Z, B=Blender_Y
+    normal_converted = normal_01.copy()
+    normal_converted[:, :, 0] = normal_01[:, :, 0]  # Blender X -> R (右)
+    normal_converted[:, :, 1] = normal_01[:, :, 2]  # Blender Z -> G (上) 
+    normal_converted[:, :, 2] = normal_01[:, :, 1]  # Blender Y -> B (前)
+    
+    # 转换到 [0, 255] 范围
+    normal_uint8 = (normal_converted * 255).clip(0, 255).astype(np.uint8)
+    
+    # 应用遮罩：无效区域设为0
+    normal_uint8[~valid_mask] = [0, 0, 0]
+    
+    # 调试信息
+    valid_pixels = np.sum(valid_mask)
+    total_pixels = valid_mask.size
+    print(f"有效像素: {valid_pixels}/{total_pixels} ({valid_pixels/total_pixels*100:.1f}%)")
+    
+    if valid_pixels > 0:
+        valid_colors = normal_uint8[valid_mask]
+        avg_color = np.mean(valid_colors, axis=0)
+        print(f"平均颜色 (R, G, B): {avg_color}")
+        
+        # 计算法线长度统计
+        valid_normal = normal[valid_mask]
+        normal_lengths = np.linalg.norm(valid_normal, axis=1)
+        print(f"法线长度范围: [{normal_lengths.min():.3f}, {normal_lengths.max():.3f}] (平均: {normal_lengths.mean():.3f})")
+    
+    cv2.imwrite(output_png, normal_uint8)
+    if normalize_to_front:
+        print(f"Saved normalized normal map to {output_png} (front-view normalized)")
+    else:
+        print(f"Saved normal map to {output_png} (with improved processing)")
+
+
+def ConvertDepthMap(input_exr, output_png, max_valid_depth=100.0, debug=False):
+    """
+    转换深度图从EXR到PNG格式，参考generate_inference_dataset.py的处理逻辑
+    
+    Args:
+        input_exr: 输入EXR文件路径
+        output_png: 输出PNG文件路径
+        max_valid_depth: 最大有效深度值（米），超过此值视为无效
+        debug: 是否打印调试信息
+    """
+    try:
+        # 读取EXR文件
+        depth = cv2.imread(input_exr, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+        if depth is None:
+            raise RuntimeError(f"Failed to load EXR file: {input_exr}")
+        
+        # 如果是多通道，取第一个通道
+        if len(depth.shape) == 3:
+            depth = depth[:, :, 0]
+        
+        if debug:
+            print(f"EXR shape: {depth.shape}, dtype: {depth.dtype}")
+        
+        # 处理无效值
+        # 1. 替换inf和nan为0
+        depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 2. 将超过最大有效深度的值设为0（标记为无效/背景）
+        depth[depth > max_valid_depth] = 0.0
+        
+        # 3. 将负值设为0
+        depth[depth < 0] = 0.0
+        
+        if debug:
+            valid_mask = depth > 0
+            if np.any(valid_mask):
+                print(f"   深度范围: [{np.min(depth[valid_mask]):.3f}, {np.max(depth[valid_mask]):.3f}] 米")
+                print(f"   有效像素: {np.sum(valid_mask)} / {depth.size} ({np.sum(valid_mask)/depth.size*100:.2f}%)")
+            else:
+                print(f"   ⚠️  警告: 没有有效深度值！")
+        
+        # 转换为毫米并保存为16位PNG
+        depth_mm = depth * 1000.0  # 转换为毫米
+        
+        # 限制在16位范围内
+        depth_uint16 = np.clip(depth_mm, 0, 65535).astype(np.uint16)
+        
+        if debug:
+            valid_mask = depth_uint16 > 0
+            if np.any(valid_mask):
+                print(f"   深度(mm)范围: [{np.min(depth_uint16[valid_mask])}, {np.max(depth_uint16[valid_mask])}]")
+            clipped = np.sum(depth_mm > 65535)
+            if clipped > 0:
+                print(f"   ⚠️  警告: {clipped} 个像素深度超过65535mm，已截断")
+        
+        # 保存为PNG
+        cv2.imwrite(output_png, depth_uint16)
+        print(f"Saved depth map to {output_png} (16-bit, scaled by 1000)")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 转换深度图失败: {e}")
+        return False
 
 
 def init_render(engine='CYCLES', resolution=512, geo_mode=False):
@@ -786,6 +965,50 @@ def normalize_scene() -> Tuple[float, Vector]:
     
     return scale, offset
 
+def rotate_mesh_for_four_view():
+    """旋转mesh以匹配四视图的相机位置
+    四视图相机位置：0°(前), 90°(右), 180°(后), 270°(左)
+    由于正视图现在是右视图，需要将mesh右旋90°使正视图对应相机0°位置
+    """
+    # 选择所有mesh对象
+    mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    
+    if not mesh_objects:
+        print("⚠️  没有找到mesh对象")
+        return
+    
+    print(f"找到 {len(mesh_objects)} 个mesh对象，开始右旋90°...")
+    
+    # 创建旋转矩阵：绕Z轴左旋90度
+    rotation_matrix = Matrix.Rotation(np.pi/2, 4, 'Z')
+    
+    # 直接修改每个mesh对象的变换矩阵
+    for obj in mesh_objects:
+        # 获取当前的世界变换矩阵
+        current_matrix = obj.matrix_world.copy()
+        
+        # 应用旋转（右旋90度）
+        # 注意：这里使用右乘来应用旋转
+        new_matrix = rotation_matrix @ current_matrix
+        
+        # 设置新的变换矩阵
+        obj.matrix_world = new_matrix
+        
+        print(f"  已旋转对象: {obj.name}")
+    
+    print("✅ 已将mesh右旋90°以匹配四视图相机位置")
+    
+    # 更新场景
+    bpy.context.view_layer.update()
+    
+    # 验证旋转结果
+    print("验证旋转结果:")
+    for obj in mesh_objects:
+        # 获取旋转后的位置和旋转信息
+        pos, rot, scale = obj.matrix_world.decompose()
+        euler = rot.to_euler('XYZ')
+        print(f"  {obj.name}: 位置=({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}), 旋转=({np.degrees(euler.z):.1f}°)")
+
 def get_transform_matrix(obj: bpy.types.Object) -> list:
     pos, rt, _ = obj.matrix_world.decompose()
     rt = rt.to_matrix()
@@ -817,6 +1040,7 @@ def main(arg):
             views = four_view_camera_sequence()
         arg.save_mesh = True
         arg.save_depth = True
+        arg.save_normal = True
     else:
         views = orthogonal_camera_sequence()
         arg.save_albedo = True
@@ -846,6 +1070,11 @@ def main(arg):
     # normalize scene
     scale, offset = normalize_scene()
     print('[INFO] Scene normalized.')
+    
+    # 在四视图模式下，在对象加载和归一化后旋转mesh
+    if arg.geo_mode and arg.views == 4:
+        print('[INFO] 四视图模式：旋转mesh以匹配相机位置...')
+        rotate_mesh_for_four_view()
     
     # Initialize camera and lighting
     cam = init_camera()
@@ -895,14 +1124,29 @@ def main(arg):
             path = glob.glob(f'{output.file_slots[0].path}*.{ext}')[0]
             os.rename(path, f'{output.file_slots[0].path}.{ext}')
         
-        if not arg.geo_mode:
+        # Convert normal map to PNG format in all modes
+        if arg.save_normal:
+            # 使用深度图作为遮罩
+            depth_exr_path = os.path.join(arg.output_folder, f'{i:03d}_depth.exr')
             ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'), 
-                             os.path.join(arg.output_folder, f'{i:03d}_normal.jpg'))
-            # 深度图现在直接保存为PNG格式，不需要转换
-            # ConvertDepthMap(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'), 
-            #                 os.path.join(arg.output_folder, f'{i:03d}_depth.png'))
-            os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'))
-            os.remove(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'))
+                             os.path.join(arg.output_folder, f'{i:03d}_normal.png'),
+                             depth_exr=depth_exr_path, view_index=i)
+            
+            # 保存标准法线图（每个方向都当作正视图）
+            ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'), 
+                             os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'),
+                             depth_exr=depth_exr_path, normalize_to_front=True, view_index=i)
+            #os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'))
+        
+        # Convert depth map to PNG format in all modes  
+        if arg.save_depth:
+            success = ConvertDepthMap(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'), 
+                                     os.path.join(arg.output_folder, f'{i:03d}_depth.png'),
+                                     max_valid_depth=100.0, debug=False)
+            if success:
+                os.remove(os.path.join(arg.output_folder, f'{i:03d}_depth.exr'))
+            else:
+                print(f"⚠️  深度图转换失败，保留EXR文件: {i:03d}_depth.exr")
 
         # Save camera parameters
         metadata = {

@@ -51,7 +51,6 @@ def check_dataset_structure(dataset_path: str) -> Tuple[List[str], List[Dict]]:
             required_geo_files = [
                 f"{obj_name}_sdf.npz",
                 f"{obj_name}_surface.npz",
-                f"{obj_name}_watertight.obj"
             ]
             for file_name in required_geo_files:
                 file_path = geo_data_dir / file_name

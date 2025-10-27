@@ -74,7 +74,7 @@ def read_json(path):
     return data
 
 
-def padding(image, mask, center=True, padding_ratio_range=[1.15, 1.15]):
+def padding(image, mask, center=True, padding_ratio_range=[1, 1]):
     """
     Pad the input image and mask to a square shape with padding ratio.
 
@@ -143,7 +143,7 @@ class AlignedShapeLatentDataset(torch.utils.data.dataset.IterableDataset):
         deterministic = False,
         worker_seed = None,
         padding = True,
-        padding_ratio_range=[1.15, 1.15],
+        padding_ratio_range=[1, 1],
         load_depth: bool = False
     ):
         super().__init__()
@@ -435,7 +435,7 @@ class AlignedShapeLatentModule(LightningDataModule):
         sharpedge_label: bool = False,
         return_normal: bool = False, 
         padding = True,
-        padding_ratio_range=[1.15, 1.15],
+        padding_ratio_range=[1, 1],
         load_depth: bool = False
     ):
 

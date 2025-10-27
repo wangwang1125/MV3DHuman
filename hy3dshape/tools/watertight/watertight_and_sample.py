@@ -203,6 +203,8 @@ if __name__ == '__main__':
     parser.add_argument('--input_obj', type=str, help='Path to the input OBJ file')
     parser.add_argument('--output_prefix', type=str, default=None, 
         help='Base name for output files (default: input OBJ filename without extension)')
+    parser.add_argument('--no_watertight', action='store_true',
+        help='If set, skip watertight reconstruction and sample directly on the original mesh')
     args = parser.parse_args()
 
     input_obj = args.input_obj
@@ -211,7 +213,13 @@ if __name__ == '__main__':
     V, F = igl.read_triangle_mesh(input_obj)
     V = normalize_to_unit_box(V)
 
-    mc_verts, mc_faces = Watertight(V, F)
+    if args.no_watertight:
+        # 直接使用归一化后的原始网格进行采样
+        mc_verts, mc_faces = V, F
+    else:
+        # 进行watertight重建后再采样
+        mc_verts, mc_faces = Watertight(V, F)
+
     surface_data, sdf_data = SampleMesh(mc_verts, mc_faces)
 
     parent_folder = os.path.dirname(args.output_prefix)
@@ -220,4 +228,6 @@ if __name__ == '__main__':
     np.savez(export_surface, **surface_data)
     export_sdf = f'{name}_sdf.npz'
     np.savez(export_sdf, **sdf_data)
-    igl.writeOBJ(f'{name}_watertight.obj', mc_verts, mc_faces)
+    # 仅当执行了watertight时导出watertight网格，否则导出原网格名称更合理
+    out_obj_name = f'{name}_watertight.obj' if not args.no_watertight else f'{name}_original.obj'
+    igl.writeOBJ(out_obj_name, mc_verts, mc_faces)

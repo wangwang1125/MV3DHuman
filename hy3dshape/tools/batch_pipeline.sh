@@ -2,7 +2,17 @@
 
 # 批量处理obj文件的脚本
 # 基于原始pipeline.sh修改
-
+#
+# 功能：
+# 1. 自动跳过已处理的文件（默认行为）
+# 2. 支持强制重新处理所有文件
+# 3. 提供详细的处理统计信息
+#
+# 使用方法：
+# 1. 修改下面的路径配置
+# 2. 运行: bash batch_pipeline.sh
+# 3. 如需强制重新处理，设置 FORCE_REPROCESS="true"
+export USE_NO_WATERTIGHT="true"
 export OPENCV_IO_ENABLE_OPENEXR=1
 export OUTPUT_FOLDER=/mnt/g/mini_mv_depth_trainset/preprocessed
 export BLENDER_PATH=/mnt/d/workapp/wsl/blender/4.5/python/bin/python3.11
@@ -11,6 +21,11 @@ export BLENDER_PATH=/mnt/d/workapp/wsl/blender/4.5/python/bin/python3.11
 # 默认为当前目录 (.) - 递归搜索所有子目录
 # 示例: export INPUT_FOLDER="../test_models" 或 export INPUT_FOLDER="/path/to/your/obj/files"
 export INPUT_FOLDER="/mnt/g/01HighModels"
+
+# 强制重新处理选项
+# 设置为 "true" 将重新处理所有文件，即使输出已存在
+# 设置为 "false" 将跳过已处理的文件（默认）
+export FORCE_REPROCESS="false"
 
 # 检查Blender路径是否存在
 if [ ! -f "$BLENDER_PATH" ]; then
@@ -28,6 +43,19 @@ fi
 
 # 创建输出目录
 mkdir -p "$OUTPUT_FOLDER"
+
+# 函数：检查文件是否已经处理过
+is_already_processed() {
+    local name="$1"
+    local output_dir="$OUTPUT_FOLDER/$name"
+    
+    # 只检查输出目录是否存在
+    if [ -d "$output_dir" ]; then
+        return 0  # 已处理（文件夹存在）
+    else
+        return 1  # 未处理（文件夹不存在）
+    fi
+}
 
 # 函数：处理单个obj文件
 process_obj_file() {
@@ -56,9 +84,21 @@ process_obj_file() {
         return 1
     fi
     
-    # 运行watertight处理
-    echo "运行watertight处理..."
-    python watertight/watertight_and_sample.py --input_obj "$OUTPUT_FOLDER/$name/render_cond/mesh.ply" --output_prefix "$OUTPUT_FOLDER/$name/geo_data/$name"
+    # 运行几何采样（支持跳过watertight重建）
+    # 如需直接基于原网格采样，请设置环境变量 USE_NO_WATERTIGHT="true"
+    echo "运行几何采样..."
+    if [ "$USE_NO_WATERTIGHT" == "true" ]; then
+        echo "已启用: 跳过watertight重建，直接用原网格采样"
+        python watertight/watertight_and_sample.py \
+            --input_obj "$OUTPUT_FOLDER/$name/render_cond/mesh.ply" \
+            --output_prefix "$OUTPUT_FOLDER/$name/geo_data/$name" \
+            --no_watertight
+    else
+        echo "使用: watertight重建后进行采样"
+        python watertight/watertight_and_sample.py \
+            --input_obj "$OUTPUT_FOLDER/$name/render_cond/mesh.ply" \
+            --output_prefix "$OUTPUT_FOLDER/$name/geo_data/$name"
+    fi
     
     if [ $? -ne 0 ]; then
         echo "错误: watertight处理失败 - $input_file"
@@ -73,9 +113,12 @@ process_obj_file() {
 processed_count=0
 success_count=0
 failed_count=0
+skipped_count=0
 
 echo "开始批量处理obj文件..."
 echo "输出目录: $OUTPUT_FOLDER"
+echo "输入目录: $INPUT_FOLDER"
+echo "强制重新处理: $FORCE_REPROCESS"
 echo "="*50
 
 # 查找并处理所有obj文件
@@ -96,6 +139,16 @@ find "$INPUT_FOLDER" -name "*.obj" -type f | while read -r obj_file; do
         name="${parent_dir}_mesh"
     fi
     
+    # 检查是否已经处理过（除非强制重新处理）
+    if [ "$FORCE_REPROCESS" != "true" ] && is_already_processed "$name"; then
+        ((skipped_count++))
+        echo "[$processed_count] ⏭️  跳过已处理: $obj_file -> $name"
+        echo "   (输出目录已存在: $OUTPUT_FOLDER/$name)"
+        echo "   (如需强制重新处理，请设置 FORCE_REPROCESS=\"true\")"
+        echo "-"*30
+        continue
+    fi
+    
     # 处理文件
     ((processed_count++))
     echo "[$processed_count] 处理文件: $obj_file -> $name"
@@ -113,7 +166,9 @@ done
 
 echo "="*50
 echo "批量处理完成!"
-echo "总计处理: $processed_count 个文件"
+echo "总计文件: $((processed_count + skipped_count)) 个"
+echo "已跳过: $skipped_count 个"
+echo "实际处理: $processed_count 个"
 echo "成功: $success_count 个"
 echo "失败: $failed_count 个"
 echo "输出目录: $OUTPUT_FOLDER"
