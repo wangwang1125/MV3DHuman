@@ -293,7 +293,48 @@ class Diffuser(pl.LightningModule):
 
     def forward(self, batch):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16): #float32 for text
-            contexts = self.cond_stage_model(image=batch.get('image'), text=batch.get('text'), mask=batch.get('mask'))
+            # Print batch info (only once per training run)
+            if not hasattr(self, '_printed_batch_info'):
+                print(f"\n{'='*70}")
+                print(f"[Flow Matching Forward] Batch Information")
+                print(f"{'='*70}")
+                for key in ['image', 'normal', 'depth']:
+                    if key in batch and batch[key] is not None:
+                        print(f"  {key}: shape={batch[key].shape}")
+                print(f"{'='*70}\n")
+                self._printed_batch_info = True
+            
+            # Process RGB images
+            rgb_contexts = self.cond_stage_model(image=batch.get('image'), text=batch.get('text'), mask=batch.get('mask'))
+            
+            # Process normal maps if available - concatenate with RGB tokens
+            if 'normal' in batch and batch['normal'] is not None:
+                # Load normal maps and encode them through DinoImageEncoderMV
+                normal_contexts = self.cond_stage_model(image=batch.get('normal'), text=batch.get('text'), mask=batch.get('normal_mask'))
+                
+                # Concatenate RGB and Normal tokens along sequence dimension
+                for key in rgb_contexts:
+                    if isinstance(rgb_contexts[key], torch.Tensor):
+                        if key in normal_contexts and isinstance(normal_contexts[key], torch.Tensor):
+                            # Concatenate RGB and Normal tokens
+                            rgb_contexts[key] = torch.cat([rgb_contexts[key], normal_contexts[key]], dim=1)
+            
+            contexts = rgb_contexts
+            
+            # Print context info (only once per training run)
+            if not hasattr(self, '_printed_context_info'):
+                print(f"\n{'='*70}")
+                print(f"[Flow Matching Forward] Condition Context Summary")
+                print(f"{'='*70}")
+                for key, value in contexts.items():
+                    if isinstance(value, dict):
+                        for sub_key, sub_value in value.items():
+                            if isinstance(sub_value, torch.Tensor):
+                                print(f"  {key}['{sub_key}']: shape={sub_value.shape}, seq_len={sub_value.shape[1]}")
+                    elif isinstance(value, torch.Tensor):
+                        print(f"  {key}: shape={value.shape}, seq_len={value.shape[1]}")
+                print(f"{'='*70}\n")
+                self._printed_context_info = True
             
             # Process depth conditioning if available
             if self.controlnet is not None and 'depth' in batch:

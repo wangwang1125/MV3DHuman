@@ -405,65 +405,7 @@ def ConvertNormalMap(input_exr, output_png, depth_exr=None, normalize_to_front=F
     # 最终裁剪到[-1,1]范围
     normal = np.clip(normal, -1.0, 1.0)
     
-    # 如果需要标准化为正视图方向
-    if normalize_to_front:
-        print("🔄 标准化法线为正视图方向...")
-        # 获取当前相机的变换矩阵
-        cam = bpy.context.scene.camera
-        if cam:
-            # 获取相机的世界变换矩阵
-            cam_matrix = cam.matrix_world
-            # 提取相机的旋转部分（3x3矩阵）
-            cam_rotation = cam_matrix.to_3x3()
-            
-            # 将Blender Matrix转换为numpy数组
-            cam_rotation_np = np.array(cam_rotation)
-            
-            # 检查是否是正视图（索引0）
-            if view_index == 0:
-                print("✅ 检测到正视图（索引0），跳过标准化（保持原始法线）")
-            else:
-                print(f"📐 检测到非正视图（索引{view_index}），进行标准化...")
-                
-                # 将法线从当前相机空间转换到正视图相机空间
-                # normal的shape是 (H, W, 3)，需要reshape为 (H*W, 3) 进行矩阵乘法
-                original_shape = normal.shape
-                normal_flat = normal.reshape(-1, 3)
-                
-                # 计算从当前相机空间到正视图相机空间的转换矩阵
-                # 当前相机空间 -> 世界空间 -> 正视图相机空间
-                # 当前相机旋转矩阵的逆矩阵 = 从当前相机空间到世界空间
-                # 正视图相机旋转矩阵 = 从世界空间到正视图相机空间
-                
-                # 正视图相机的旋转矩阵（标准正视图方向）
-                # 正视图相机朝向-Z方向，向上为+Y方向，向右为+X方向
-                front_view_rotation = np.array([
-                    [1, 0, 0],   # X轴（右）
-                    [0, 0, 1],   # Y轴（上，但在Blender中Z是上）
-                    [0, -1, 0]   # Z轴（前，朝向相机，但在Blender中-Y是前）
-                ])
-                
-                # 计算转换矩阵：当前相机空间 -> 世界空间 -> 正视图相机空间
-                # cam_rotation_np 是从世界空间到当前相机空间的变换
-                # 所以 cam_rotation_np.T 是从当前相机空间到世界空间的变换
-                # front_view_rotation 是从世界空间到正视图相机空间的变换
-                world_to_front = front_view_rotation @ cam_rotation_np.T
-                
-                # 应用转换矩阵，将法线转换到正视图相机空间
-                normal_front_space = np.dot(normal_flat, world_to_front)
-                
-                # 重新reshape回原始形状
-                normal = normal_front_space.reshape(original_shape)
-                
-                # 调试信息：显示转换前后的法线范围
-                if np.any(normal != 0):
-                    print(f"   转换后法线范围: X[{normal[:,:,0].min():.3f}, {normal[:,:,0].max():.3f}], "
-                          f"Y[{normal[:,:,1].min():.3f}, {normal[:,:,1].max():.3f}], "
-                          f"Z[{normal[:,:,2].min():.3f}, {normal[:,:,2].max():.3f}]")
-                
-                print(f"✅ 法线已标准化为正视图方向")
-        else:
-            print("⚠️  无法获取相机信息，跳过标准化")
+    # normalize_to_front参数保留用于兼容性，但实际逻辑已在渲染循环中处理
     
     # 创建遮罩：使用深度图或法线图本身
     if depth_exr and os.path.exists(depth_exr):
@@ -1131,12 +1073,70 @@ def main(arg):
             ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'), 
                              os.path.join(arg.output_folder, f'{i:03d}_normal.png'),
                              depth_exr=depth_exr_path, view_index=i)
+            os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'))
             
-            # 保存标准法线图（每个方向都当作正视图）
-            ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'), 
-                             os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'),
-                             depth_exr=depth_exr_path, normalize_to_front=True, view_index=i)
-            #os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'))
+            # 保存标准法线图（_N版本）：其他视图时，通过旋转mesh到正视图位置来重新渲染
+            if i != 0:  # 非正视图时
+                print(f"🔄 为视图{i}重新渲染_N法线图（旋转mesh到正视图位置）...")
+                
+                # 计算需要旋转的角度（从当前角度到正视图的角度）
+                target_angle = 0  # 正视图角度
+                current_angle = view['hangle']
+                rotation_angle = current_angle  # 需要旋转的角度
+                
+                # 旋转mesh回到正视图位置
+                rotation_matrix = Matrix.Rotation(-rotation_angle, 4, 'Z')
+                mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+                for obj in mesh_objects:
+                    current_matrix = obj.matrix_world.copy()
+                    new_matrix = rotation_matrix @ current_matrix
+                    obj.matrix_world = new_matrix
+                
+                # 更新场景
+                bpy.context.view_layer.update()
+                
+                # 重新设置相机到正视图位置
+                cam.location = (
+                    view['cam_dis'] * np.cos(target_angle) * np.cos(0),
+                    view['cam_dis'] * np.sin(target_angle) * np.cos(0),
+                    view['cam_dis'] * np.sin(0)
+                )
+                
+                # 重新渲染法线图
+                normal_file_output = outputs['normal']
+                normal_file_output.file_slots[0].path = os.path.join(arg.output_folder, f'{i:03d}_normal_N')
+                bpy.ops.render.render(write_still=True)
+                bpy.context.view_layer.update()
+                
+                # 获取渲染的法线EXR文件
+                path = glob.glob(f'{normal_file_output.file_slots[0].path}*.exr')[0]
+                os.rename(path, f'{normal_file_output.file_slots[0].path}.exr')
+                
+                # 转换并保存PNG
+                ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal_N.exr'), 
+                                 os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'),
+                                 depth_exr=depth_exr_path, view_index=i)
+                os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal_N.exr'))
+                # 恢复mesh和相机到原始位置
+                rotation_matrix = Matrix.Rotation(rotation_angle, 4, 'Z')
+                for obj in mesh_objects:
+                    current_matrix = obj.matrix_world.copy()
+                    new_matrix = rotation_matrix @ current_matrix
+                    obj.matrix_world = new_matrix
+                
+                cam.location = (
+                    view['cam_dis'] * np.cos(view['hangle']) * np.cos(view['vangle']),
+                    view['cam_dis'] * np.sin(view['hangle']) * np.cos(view['vangle']),
+                    view['cam_dis'] * np.sin(view['vangle'])
+                )
+                bpy.context.view_layer.update()
+                
+                print(f"✅ 视图{i}的_N法线图渲染完成")
+            else:
+                # 正视图直接使用原始法线图
+                shutil.copyfile(os.path.join(arg.output_folder, f'{i:03d}_normal.png'),
+                                os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'))
+            
         
         # Convert depth map to PNG format in all modes  
         if arg.save_depth:
