@@ -773,19 +773,38 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
             if normal_mask is not None:
                 normal_mask_tensor = normal_mask.to(device).to(dtype)
             
+            # 通过prepare_image处理normal（与RGB图相同的预处理流程）
+            normal_cond_inputs = self.prepare_image(normal, normal_mask_tensor)
+            normal_image = normal_cond_inputs.pop('image') if 'image' in normal_cond_inputs else normal
+            
             # 编码法线图（使用与RGB图相同的编码器）
-            # 注意：conditioner接受image参数，这里传入normal作为image
-            # 法线图已经是预处理过的tensor，可以直接传入conditioner
-            normal_cond = self.conditioner(image=normal, mask=normal_mask_tensor)
+            # 注意：如果启用了classifier-free guidance，需要确保normal_cond的batch size与cond一致
+            normal_cond = self.encode_cond(
+                image=normal_image,
+                additional_cond_inputs=normal_cond_inputs,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                dual_guidance=False,
+            )
             
             # 将法线图的token拼接到RGB图的token后面（与训练时逻辑一致）
             for key in cond:
                 if isinstance(cond[key], torch.Tensor):
                     if key in normal_cond and isinstance(normal_cond[key], torch.Tensor):
+                        # 检查batch size是否匹配
+                        if cond[key].shape[0] != normal_cond[key].shape[0]:
+                            print(f"[Pipeline] 警告: batch size不匹配，cond[{key}]: {cond[key].shape[0]}, normal_cond[{key}]: {normal_cond[key].shape[0]}")
+                            # 如果cond的batch size更大（classifier-free guidance），需要扩展normal_cond
+                            if cond[key].shape[0] == 2 * normal_cond[key].shape[0]:
+                                # 重复normal_cond以匹配batch size
+                                normal_cond[key] = torch.cat([normal_cond[key], normal_cond[key]], dim=0)
+                                print(f"[Pipeline] 已扩展normal_cond[{key}]的batch size到: {normal_cond[key].shape[0]}")
+                            else:
+                                raise RuntimeError(f"无法匹配batch size: cond[{key}].shape[0]={cond[key].shape[0]}, normal_cond[{key}].shape[0]={normal_cond[key].shape[0]}")
+                        
                         # 在序列维度拼接 (dim=1)
                         rgb_shape_before = cond[key].shape[1]
                         cond[key] = torch.cat([cond[key], normal_cond[key]], dim=1)
-                        print(f"[Pipeline] 法线图token已拼接，key={key}, RGB tokens={rgb_shape_before}, Normal tokens={normal_cond[key].shape[1]}, 总tokens={cond[key].shape[1]}")
+                        print(f"[Pipeline] 法线图token已拼接，key={key}, RGB tokens={rgb_shape_before}, Normal tokens={normal_cond[key].shape[1]}, 总tokens={cond[key].shape[1]}, batch_size={cond[key].shape[0]}")
         
         # 如果有深度图和controlnet，处理深度条件并注入到cond中
         if controlnet is not None and depth is not None:
