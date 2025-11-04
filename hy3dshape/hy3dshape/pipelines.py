@@ -736,6 +736,10 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
         # 获取深度条件相关参数
         controlnet = kwargs.pop("controlnet", None)
         depth = kwargs.pop("depth", None)
+        
+        # 获取法线图相关参数
+        normal = kwargs.pop("normal", None)
+        normal_mask = kwargs.pop("normal_mask", None)
 
         self.set_surface_extractor(mc_algo)
 
@@ -756,6 +760,32 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
             do_classifier_free_guidance=do_classifier_free_guidance,
             dual_guidance=False,
         )
+        
+        # 如果有法线图，处理法线图条件并拼接token
+        if normal is not None:
+            print(f"[Pipeline] 处理法线图，形状: {normal.shape}")
+            normal = normal.to(device).to(dtype)
+            
+            # 法线图需要与RGB图相同的处理流程
+            # normal的形状应该是 (B, num_views, 3, H, W)
+            # 需要调整mask的格式（如果有）
+            normal_mask_tensor = None
+            if normal_mask is not None:
+                normal_mask_tensor = normal_mask.to(device).to(dtype)
+            
+            # 编码法线图（使用与RGB图相同的编码器）
+            # 注意：conditioner接受image参数，这里传入normal作为image
+            # 法线图已经是预处理过的tensor，可以直接传入conditioner
+            normal_cond = self.conditioner(image=normal, mask=normal_mask_tensor)
+            
+            # 将法线图的token拼接到RGB图的token后面（与训练时逻辑一致）
+            for key in cond:
+                if isinstance(cond[key], torch.Tensor):
+                    if key in normal_cond and isinstance(normal_cond[key], torch.Tensor):
+                        # 在序列维度拼接 (dim=1)
+                        rgb_shape_before = cond[key].shape[1]
+                        cond[key] = torch.cat([cond[key], normal_cond[key]], dim=1)
+                        print(f"[Pipeline] 法线图token已拼接，key={key}, RGB tokens={rgb_shape_before}, Normal tokens={normal_cond[key].shape[1]}, 总tokens={cond[key].shape[1]}")
         
         # 如果有深度图和controlnet，处理深度条件并注入到cond中
         if controlnet is not None and depth is not None:

@@ -305,6 +305,92 @@ def load_multiview_depths(depth_files_dict, target_size=518, num_views=None):
     return multiview_depth
 
 
+def load_multiview_normals(normal_files_dict, target_size=518, num_views=None):
+    """
+    加载多视图法线图（适用于多视图法线训练模式）
+    
+    Args:
+        normal_files_dict: 包含各个视图法线图文件的字典 {'front': file, 'right': file, 'back': file, 'left': file}
+        target_size: 目标图像尺寸，默认518
+        num_views: 期望的视图数量，如果为None则使用实际提供的视图数量
+    
+    Returns:
+        dict: 包含法线图和遮罩的字典
+            - 'normal': torch.Tensor, 形状为 (1, num_views, 3, H, W)，RGB三通道法线图
+            - 'normal_mask': torch.Tensor, 形状为 (1, num_views, 1, H, W)，法线图遮罩
+    """
+    from PIL import Image
+    import cv2
+    
+    # 根据num_views参数确定视图顺序
+    if num_views == 2:
+        # 双视图模式：front, right
+        view_order = ['front', 'right']
+    elif num_views == 3:
+        # 三视图模式：front, right, back
+        view_order = ['front', 'right', 'back']
+    else:
+        # 默认四视图模式：front, right, back, left
+        view_order = ['front', 'right', 'back', 'left']
+    
+    normal_tensors = []
+    mask_tensors = []
+    
+    for view_name in view_order:
+        if view_name in normal_files_dict and normal_files_dict[view_name] is not None:
+            normal_file = normal_files_dict[view_name]
+            file_path = normal_file.name if hasattr(normal_file, 'name') else normal_file
+            
+            try:
+                # 加载法线图（RGB三通道PNG）
+                normal_img = Image.open(file_path).convert('RGB')
+                
+                # 调整大小到目标尺寸
+                if normal_img.size[0] != target_size or normal_img.size[1] != target_size:
+                    normal_img = normal_img.resize((target_size, target_size), Image.BILINEAR)
+                
+                # 转换为numpy数组并归一化到[0,1]
+                normal_array = np.array(normal_img).astype(np.float32) / 255.0
+                
+                # 转换为torch张量并调整维度顺序 (H, W, C) -> (C, H, W)
+                normal_tensor = torch.FloatTensor(normal_array).permute(2, 0, 1)  # (3, H, W)
+                
+                # 创建遮罩：检查法线图是否有效（非零像素）
+                # 法线图通常是RGB格式，检查是否有非零像素
+                valid_mask = (normal_tensor.sum(dim=0) > 0.01).float().unsqueeze(0)  # (1, H, W)
+                
+                normal_tensors.append(normal_tensor)  # (3, H, W)
+                mask_tensors.append(valid_mask)  # (1, H, W)
+                
+                print(f"✅ 加载视图 {view_name} 法线图: {normal_tensor.shape}, 遮罩: {valid_mask.shape}")
+                
+            except Exception as e:
+                print(f"❌ 加载视图 {view_name} 法线图失败: {e}")
+                # 创建零法线图和遮罩作为占位符
+                normal_tensors.append(torch.zeros(3, target_size, target_size))
+                mask_tensors.append(torch.zeros(1, target_size, target_size))
+        else:
+            # 如果某个视图没有法线图，创建零法线图和遮罩作为占位符
+            print(f"⚠️  警告：视图 {view_name} 没有法线图，使用零法线图")
+            normal_tensors.append(torch.zeros(3, target_size, target_size))
+            mask_tensors.append(torch.zeros(1, target_size, target_size))
+    
+    # 堆叠所有视图的法线图和遮罩
+    multiview_normal = torch.stack(normal_tensors, dim=0)  # (num_views, 3, H, W)
+    multiview_mask = torch.stack(mask_tensors, dim=0)  # (num_views, 1, H, W)
+    
+    # 添加 batch 维度
+    multiview_normal = multiview_normal.unsqueeze(0)  # (1, num_views, 3, H, W)
+    multiview_mask = multiview_mask.unsqueeze(0)  # (1, num_views, 1, H, W)
+    
+    print(f"✅ 多视图法线图处理完成，形状: {multiview_normal.shape} (视图数量: {len(view_order)})")
+    
+    return {
+        'normal': multiview_normal,
+        'normal_mask': multiview_mask
+    }
+
+
 def validate_depth_file(file_path):
     """
     验证上传的深度图文件是否有效
@@ -383,6 +469,11 @@ def _gen_shape(
     mv_depth_back=None,
     mv_depth_left=None,
     mv_depth_right=None,
+    # 多视图法线图参数
+    mv_normal_front=None,
+    mv_normal_back=None,
+    mv_normal_left=None,
+    mv_normal_right=None,
     steps=50,
     guidance_scale=7.5,
     seed=1234,
@@ -420,6 +511,12 @@ def _gen_shape(
             depth_provided = any([mv_depth_front, mv_depth_back, mv_depth_left, mv_depth_right])
             if not depth_provided:
                 raise gr.Error("多视图深度模式下至少需要提供一个视图的深度图。")
+        
+        # 如果是多视图法线模式，也要验证法线图
+        if MULTIVIEW_NORMAL_MODE:
+            normal_provided = any([mv_normal_front, mv_normal_back, mv_normal_left, mv_normal_right])
+            if not normal_provided:
+                raise gr.Error("多视图法线模式下至少需要提供一个视图的法线图。")
 
     seed = int(randomize_seed_fn(seed, randomize_seed))
 
@@ -514,6 +611,38 @@ def _gen_shape(
             print(f"单视图深度图处理失败: {e}")
             raise gr.Error(f"单视图深度图处理失败: {str(e)}")
 
+    # 处理法线图
+    normal_data = None
+    
+    # 多视图法线模式
+    if MV_MODE and MULTIVIEW_NORMAL_MODE:
+        start_normal_time = time.time()
+        try:
+            # 收集所有视图的法线图
+            normal_files_dict = {}
+            if mv_normal_front is not None:
+                normal_files_dict['front'] = mv_normal_front
+            if mv_normal_right is not None:
+                normal_files_dict['right'] = mv_normal_right
+            if mv_normal_back is not None:
+                normal_files_dict['back'] = mv_normal_back
+            if mv_normal_left is not None:
+                normal_files_dict['left'] = mv_normal_left
+            
+            # 加载多视图法线图
+            normal_data = load_multiview_normals(normal_files_dict, target_size=518, num_views=args.num_views)
+            
+            # 移到GPU
+            if args.device == 'cuda':
+                normal_data['normal'] = normal_data['normal'].cuda()
+                normal_data['normal_mask'] = normal_data['normal_mask'].cuda()
+            
+            time_meta['multiview_normal processing'] = time.time() - start_normal_time
+            print(f"✅ 多视图法线图处理完成，形状: {normal_data['normal'].shape}")
+        except Exception as e:
+            print(f"❌ 多视图法线图处理失败: {e}")
+            raise gr.Error(f"多视图法线图处理失败: {str(e)}")
+
     # image to white model
     start_time = time.time()
 
@@ -541,6 +670,12 @@ def _gen_shape(
         if hasattr(i23d_worker, 'controlnet') and i23d_worker.controlnet is not None:
             model_inputs['controlnet'] = i23d_worker.controlnet
             print(f"ControlNet已添加到模型输入")
+    
+    # 如果有法线图，添加到输入中
+    if normal_data is not None:
+        model_inputs['normal'] = normal_data['normal']
+        model_inputs['normal_mask'] = normal_data['normal_mask']
+        print(f"✅ 多视图法线图已添加到模型输入，形状: {normal_data['normal'].shape}")
     
     outputs = i23d_worker(**model_inputs)
     time_meta['shape generation'] = time.time() - start_time
@@ -571,6 +706,11 @@ def generation_all(
     mv_depth_back=None,
     mv_depth_left=None,
     mv_depth_right=None,
+    # 多视图法线图参数
+    mv_normal_front=None,
+    mv_normal_back=None,
+    mv_normal_left=None,
+    mv_normal_right=None,
     steps=50,
     guidance_scale=7.5,
     seed=1234,
@@ -593,6 +733,11 @@ def generation_all(
         mv_depth_back=mv_depth_back,
         mv_depth_left=mv_depth_left,
         mv_depth_right=mv_depth_right,
+        # 传递多视图法线图参数
+        mv_normal_front=mv_normal_front,
+        mv_normal_back=mv_normal_back,
+        mv_normal_left=mv_normal_left,
+        mv_normal_right=mv_normal_right,
         steps=steps,
         guidance_scale=guidance_scale,
         seed=seed,
@@ -665,6 +810,11 @@ def shape_generation(
     mv_depth_back=None,
     mv_depth_left=None,
     mv_depth_right=None,
+    # 多视图法线图参数
+    mv_normal_front=None,
+    mv_normal_back=None,
+    mv_normal_left=None,
+    mv_normal_right=None,
     steps=50,
     guidance_scale=7.5,
     seed=1234,
@@ -687,6 +837,11 @@ def shape_generation(
         mv_depth_back=mv_depth_back,
         mv_depth_left=mv_depth_left,
         mv_depth_right=mv_depth_right,
+        # 传递多视图法线图参数
+        mv_normal_front=mv_normal_front,
+        mv_normal_back=mv_normal_back,
+        mv_normal_left=mv_normal_left,
+        mv_normal_right=mv_normal_right,
         steps=steps,
         guidance_scale=guidance_scale,
         seed=seed,
@@ -730,7 +885,9 @@ def build_app():
         title = title.replace(':', '-Turbo: Fast ')
 
     # 根据模式调整标题
-    if MULTIVIEW_DEPTH_MODE:
+    if MULTIVIEW_NORMAL_MODE:
+        title += f" (多视图法线条件模式 - {args.num_views}视图)"
+    elif MULTIVIEW_DEPTH_MODE:
         title += f" (多视图深度条件模式 - {args.num_views}视图)"
     elif DEPTH_MODE:
         title += " (单视图深度条件模式)"
@@ -928,6 +1085,99 @@ def build_app():
                             mv_depth_back = gr.State(None)
                             mv_depth_left = gr.State(None)
                             mv_depth_right = gr.State(None)
+                        
+                        # 如果启用多视图法线模式，添加法线图上传组件
+                        if MULTIVIEW_NORMAL_MODE:
+                            gr.Markdown(f"### 法线图 (RGB PNG) - {args.num_views}视图模式")
+                            
+                            # 根据视图数量动态创建上传组件
+                            if args.num_views == 2:
+                                with gr.Row():
+                                    mv_normal_front = gr.File(
+                                        label="Front Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_normal_right = gr.File(
+                                        label="Right Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                mv_normal_back = gr.State(None)
+                                mv_normal_left = gr.State(None)
+                                view_info = "视图顺序: Front(0°) → Right(90°)\n"
+                            elif args.num_views == 3:
+                                with gr.Row():
+                                    mv_normal_front = gr.File(
+                                        label="Front Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_normal_right = gr.File(
+                                        label="Right Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                with gr.Row():
+                                    mv_normal_back = gr.File(
+                                        label="Back Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_normal_left = gr.State(None)
+                                view_info = "视图顺序: Front(0°) → Right(90°) → Back(180°)\n"
+                            else:  # 4 views
+                                with gr.Row():
+                                    mv_normal_front = gr.File(
+                                        label="Front Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_normal_back = gr.File(
+                                        label="Back Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                with gr.Row():
+                                    mv_normal_left = gr.File(
+                                        label="Left Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                    mv_normal_right = gr.File(
+                                        label="Right Normal",
+                                        file_types=[".png"],
+                                        type="filepath",
+                                        interactive=True
+                                    )
+                                view_info = "视图顺序: Front(0°) → Right(90°) → Back(180°) → Left(270°)\n"
+                            
+                            gr.Markdown(
+                                f"📋 **多视图法线图要求 ({args.num_views}视图模式):**\n"
+                                f"- 格式: RGB PNG图像文件\n" 
+                                f"- 尺寸: 建议与RGB图像相同（推荐518×518）\n"
+                                f"- {view_info}"
+                                f"- 至少提供一个视图的法线图\n"
+                                f"- 法线图应为RGB格式，表示表面法线方向\n\n"
+                                f"💡 **使用提示:**\n"
+                                f"1. 按顺序上传各视图的RGB图像\n"
+                                f"2. 上传对应视图的法线图文件（RGB PNG格式）\n" 
+                                f"3. 点击生成按钮开始处理"
+                            )
+                        else:
+                            # 创建占位符状态变量
+                            mv_normal_front = gr.State(None)
+                            mv_normal_back = gr.State(None)
+                            mv_normal_left = gr.State(None)
+                            mv_normal_right = gr.State(None)
 
                 with gr.Row():
                     btn = gr.Button(value='Gen Shape', variant='primary', min_width=100)
@@ -1037,6 +1287,11 @@ Fast for very complex cases, Standard seldom use.',
                 mv_depth_back,
                 mv_depth_left,
                 mv_depth_right,
+                # 多视图法线图参数
+                mv_normal_front,
+                mv_normal_back,
+                mv_normal_left,
+                mv_normal_right,
                 num_steps,
                 cfg_scale,
                 seed,
@@ -1070,6 +1325,11 @@ Fast for very complex cases, Standard seldom use.',
                 mv_depth_back,
                 mv_depth_left,
                 mv_depth_right,
+                # 多视图法线图参数
+                mv_normal_front,
+                mv_normal_back,
+                mv_normal_left,
+                mv_normal_right,
                 num_steps,
                 cfg_scale,
                 seed,
@@ -1178,8 +1438,10 @@ if __name__ == '__main__':
     parser.add_argument('--low_vram_mode', action='store_true')
     parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
     parser.add_argument('--enable_multiview_depth', action='store_true', help='Enable multi-view depth-conditioned model')
+    parser.add_argument('--enable_multiview_normal', action='store_true', help='Enable multi-view normal-conditioned model')
     parser.add_argument('--depth_lora_path', type=str, default="./hy3dshape/output_folder/dit/depth_lora_checkpoints/ckpt/ckpt-step=00000200.ckpt", help='Path to depth LoRA checkpoint')
-    parser.add_argument('--num_views', type=int, default=4, help='Number of views for multi-view depth model (default: 4)')
+    parser.add_argument('--normal_lora_path', type=str, default=None, help='Path to normal LoRA checkpoint')
+    parser.add_argument('--num_views', type=int, default=4, help='Number of views for multi-view model (default: 4)')
     args = parser.parse_args()
     args.enable_flashvdm = False
 
@@ -1187,10 +1449,11 @@ if __name__ == '__main__':
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    MV_MODE = 'mv' in args.model_path or args.enable_multiview_depth
+    MV_MODE = 'mv' in args.model_path or args.enable_multiview_depth or args.enable_multiview_normal
     TURBO_MODE = 'turbo' in args.subfolder
     DEPTH_MODE = args.enable_depth or args.enable_multiview_depth  # 标记是否使用深度图模式
     MULTIVIEW_DEPTH_MODE = args.enable_multiview_depth  # 标记是否使用多视图深度图模式
+    MULTIVIEW_NORMAL_MODE = args.enable_multiview_normal  # 标记是否使用多视图法线图模式
 
     HTML_HEIGHT = 690 if MV_MODE else 650
     HTML_WIDTH = 500
