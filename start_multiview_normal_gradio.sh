@@ -18,6 +18,8 @@ if [ -n "$NORMAL_LORA_PATH" ] && [ -f "$NORMAL_LORA_PATH" ]; then
 else
     # 2. 如果没有指定或文件不存在，查找Lightning checkpoint (.ckpt文件)
     LIGHTNING_DIRS=(
+        "./hy3dshape/output_folder/dit/normal_lora_finetuning/ckpt"
+        "./output_folder/dit/normal_lora_finetuning/ckpt"
         "./hy3dshape/output_folder/dit/multiview_normal_lora_checkpoints/ckpt"
         "./output_folder/dit/multiview_normal_lora_checkpoints/ckpt"
     )
@@ -58,7 +60,20 @@ if [ -z "$NORMAL_LORA_PATH" ]; then
     done
 fi
 
-if [ -z "$NORMAL_LORA_PATH" ]; then
+# 检查是否找到了checkpoint文件（而不是目录）
+if [ -n "$NORMAL_LORA_PATH" ] && [ ! -f "$NORMAL_LORA_PATH" ] && [ -d "$NORMAL_LORA_PATH" ]; then
+    # 如果是目录，查找其中的.ckpt文件
+    ckpt_files=$(ls -t "$NORMAL_LORA_PATH"/*.ckpt 2>/dev/null | head -n 1)
+    if [ -n "$ckpt_files" ]; then
+        NORMAL_LORA_PATH="$ckpt_files"
+        echo "✅ 在目录中找到最新的checkpoint: $NORMAL_LORA_PATH"
+    else
+        echo "⚠️  目录中没有找到.ckpt文件: $NORMAL_LORA_PATH"
+        NORMAL_LORA_PATH=""
+    fi
+fi
+
+if [ -z "$NORMAL_LORA_PATH" ] || [ ! -f "$NORMAL_LORA_PATH" ]; then
     echo "⚠️  警告: 未找到多视图法线LoRA权重，将使用基础模型"
     echo "请确保已完成训练并设置正确的checkpoint路径"
     LORA_ARG=""
