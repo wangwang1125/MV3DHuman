@@ -517,6 +517,8 @@ def _gen_shape(
             normal_provided = any([mv_normal_front, mv_normal_back, mv_normal_left, mv_normal_right])
             if not normal_provided:
                 raise gr.Error("多视图法线模式下至少需要提供一个视图的法线图。")
+        
+        # 多视图RGB模式不需要验证法线图或深度图，只需要RGB图像
 
     seed = int(randomize_seed_fn(seed, randomize_seed))
 
@@ -536,7 +538,7 @@ def _gen_shape(
             'octree_resolution': octree_resolution,
             'check_box_rembg': check_box_rembg,
             'num_chunks': num_chunks,
-            'mode': 'multiview_depth' if (MV_MODE and MULTIVIEW_DEPTH_MODE) else ('depth' if DEPTH_MODE else 'rgb'),
+            'mode': 'multiview_rgb' if (MV_MODE and MULTIVIEW_RGB_MODE) else ('multiview_depth' if (MV_MODE and MULTIVIEW_DEPTH_MODE) else ('depth' if DEPTH_MODE else 'rgb')),
         }
     }
     time_meta = {}
@@ -885,7 +887,9 @@ def build_app():
         title = title.replace(':', '-Turbo: Fast ')
 
     # 根据模式调整标题
-    if MULTIVIEW_NORMAL_MODE:
+    if MULTIVIEW_RGB_MODE:
+        title += f" (多视图RGB重建模式 - {args.num_views}视图)"
+    elif MULTIVIEW_NORMAL_MODE:
         title += f" (多视图法线条件模式 - {args.num_views}视图)"
     elif MULTIVIEW_DEPTH_MODE:
         title += f" (多视图深度条件模式 - {args.num_views}视图)"
@@ -993,6 +997,20 @@ def build_app():
                                                      min_width=100, elem_classes='mv-image')
                             mv_image_right = gr.Image(label='Right', type='pil', image_mode='RGBA', height=140,
                                                       min_width=100, elem_classes='mv-image')
+                        
+                        # 如果启用多视图RGB模式，添加说明信息
+                        if MULTIVIEW_RGB_MODE:
+                            gr.Markdown(
+                                f"📋 **多视图RGB重建模式 ({args.num_views}视图):**\n"
+                                f"- 模式: 仅使用RGB彩色图像进行3D重建\n"
+                                f"- 不需要: 法线图或深度图\n"
+                                f"- 视图顺序: Front(0°) → Right(90°) → Back(180°) → Left(270°)\n"
+                                f"- 建议: 上传4个视图的RGB图像以获得最佳效果\n\n"
+                                f"💡 **使用提示:**\n"
+                                f"1. 按顺序上传各视图的RGB图像（Front、Right、Back、Left）\n"
+                                f"2. 图像会自动进行背景移除处理\n"
+                                f"3. 点击生成按钮开始3D重建"
+                            )
                         
                         # 如果启用多视图深度模式，添加深度图上传组件
                         if MULTIVIEW_DEPTH_MODE and DEPTH_MODE:
@@ -1439,8 +1457,10 @@ if __name__ == '__main__':
     parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
     parser.add_argument('--enable_multiview_depth', action='store_true', help='Enable multi-view depth-conditioned model')
     parser.add_argument('--enable_multiview_normal', action='store_true', help='Enable multi-view normal-conditioned model')
+    parser.add_argument('--enable_multiview_rgb', action='store_true', help='Enable multi-view RGB reconstruction model (4 views, no normal maps)')
     parser.add_argument('--depth_lora_path', type=str, default="./hy3dshape/output_folder/dit/depth_lora_checkpoints/ckpt/ckpt-step=00000200.ckpt", help='Path to depth LoRA checkpoint')
     parser.add_argument('--normal_lora_path', type=str, default=None, help='Path to normal LoRA checkpoint')
+    parser.add_argument('--rgb_lora_path', type=str, default=None, help='Path to RGB LoRA checkpoint')
     parser.add_argument('--num_views', type=int, default=4, help='Number of views for multi-view model (default: 4)')
     args = parser.parse_args()
     args.enable_flashvdm = False
@@ -1449,11 +1469,12 @@ if __name__ == '__main__':
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    MV_MODE = 'mv' in args.model_path or args.enable_multiview_depth or args.enable_multiview_normal
+    MV_MODE = 'mv' in args.model_path or args.enable_multiview_depth or args.enable_multiview_normal or args.enable_multiview_rgb
     TURBO_MODE = 'turbo' in args.subfolder
     DEPTH_MODE = args.enable_depth or args.enable_multiview_depth  # 标记是否使用深度图模式
     MULTIVIEW_DEPTH_MODE = args.enable_multiview_depth  # 标记是否使用多视图深度图模式
     MULTIVIEW_NORMAL_MODE = args.enable_multiview_normal  # 标记是否使用多视图法线图模式
+    MULTIVIEW_RGB_MODE = args.enable_multiview_rgb  # 标记是否使用多视图RGB重建模式（仅四视图彩色，不使用法线图）
 
     HTML_HEIGHT = 690 if MV_MODE else 650
     HTML_WIDTH = 500
@@ -1532,9 +1553,11 @@ if __name__ == '__main__':
 
     rmbg_worker = BackgroundRemover()
     
-    # 根据是否启用深度模式或法线模式来加载模型
-    if DEPTH_MODE or MULTIVIEW_NORMAL_MODE:
-        if MULTIVIEW_NORMAL_MODE:
+    # 根据是否启用深度模式、法线模式或RGB模式来加载模型
+    if DEPTH_MODE or MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
+        if MULTIVIEW_RGB_MODE:
+            print("正在加载多视图RGB重建模型...")
+        elif MULTIVIEW_NORMAL_MODE:
             print("正在加载多视图法线条件模型...")
         elif DEPTH_MODE:
             print("正在加载深度条件模型...")
@@ -1560,7 +1583,7 @@ if __name__ == '__main__':
                         print(f"自动发现深度LoRA权重: {args.depth_lora_path}")
                         break
         
-        # 加载支持深度条件或法线条件的模型
+        # 加载支持深度条件、法线条件或RGB重建的模型
         try:
             if DEPTH_MODE:
                 # 深度模式需要load_depth参数
@@ -1573,8 +1596,8 @@ if __name__ == '__main__':
                     load_depth=True,  # 启用深度图支持
                     control_in_channels=1,  # 深度图单通道
                 )
-            elif MULTIVIEW_NORMAL_MODE:
-                # 法线模式不需要load_depth，直接加载标准模型
+            elif MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
+                # 法线模式和RGB模式不需要load_depth，直接加载标准模型
                 i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     args.model_path,
                     subfolder=args.subfolder,
@@ -1911,6 +1934,130 @@ if __name__ == '__main__':
                     print(f"法线 LoRA 路径不存在: {args.normal_lora_path}")
                 print("使用基础法线条件模型（未加载LoRA权重）")
         
+        # 处理多视图RGB模式的LoRA权重加载
+        if MULTIVIEW_RGB_MODE:
+            # 自动寻找RGB LoRA权重路径（如果未指定）
+            if args.rgb_lora_path is None:
+                default_lora_dirs = [
+                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
+                    "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
+                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints",
+                    "./output_folder/dit/multiview_rgb_lora_checkpoints",
+                ]
+                
+                for lora_dir in default_lora_dirs:
+                    if os.path.exists(lora_dir):
+                        # 如果是目录，查找.ckpt文件
+                        if os.path.isdir(lora_dir):
+                            ckpt_files = [f for f in os.listdir(lora_dir) if f.endswith('.ckpt')]
+                            if ckpt_files:
+                                # 按文件名排序，选择最新的（步数最大的）
+                                latest_ckpt = max(ckpt_files, key=lambda x: int(x.split('=')[1].split('.')[0]) if '=' in x else 0)
+                                args.rgb_lora_path = os.path.join(lora_dir, latest_ckpt)
+                                print(f"自动发现RGB LoRA权重: {args.rgb_lora_path}")
+                                break
+                        else:
+                            args.rgb_lora_path = lora_dir
+                            break
+            
+            # 如果提供了RGB LoRA路径，则加载LoRA权重
+            if args.rgb_lora_path and os.path.exists(args.rgb_lora_path):
+                print(f"正在加载RGB LoRA 权重: {args.rgb_lora_path}")
+                try:
+                    from peft import PeftModel
+                    
+                    # 检查是否是Lightning checkpoint格式 (.ckpt)
+                    if args.rgb_lora_path.endswith('.ckpt'):
+                        print("检测到Lightning checkpoint格式，加载RGB LoRA权重...")
+                        ckpt = torch.load(args.rgb_lora_path, map_location='cpu')
+                        
+                        if 'state_dict' in ckpt:
+                            state_dict = ckpt['state_dict']
+                            print(f"Checkpoint包含 {len(state_dict)} 个权重")
+                            
+                            # 分析checkpoint内容
+                            lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                            print(f"  - LoRA参数: {len(lora_keys)} 个")
+                            
+                            success_count = 0
+                            
+                            # 加载LoRA权重
+                            if lora_keys and hasattr(i23d_worker, 'model'):
+                                try:
+                                    print("\n正在加载RGB LoRA权重...")
+                                    # 提取model相关的权重（包含LoRA）
+                                    model_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('model.'):
+                                            new_key = key[6:]  # 去掉'model.'前缀
+                                            model_state_dict[new_key] = value
+                                    
+                                    # 先应用LoRA配置到基础模型
+                                    from peft import LoraConfig, get_peft_model
+                                    lora_config = LoraConfig(
+                                        r=8,
+                                        lora_alpha=8,
+                                        target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                        lora_dropout=0.0,
+                                    )
+                                    i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
+                                    
+                                    # 加载包含LoRA的权重
+                                    missing, unexpected = i23d_worker.model.load_state_dict(
+                                        model_state_dict, strict=False)
+                                    print(f"✅ RGB LoRA权重加载成功")
+                                    print(f"  - Missing keys: {len(missing)}")
+                                    print(f"  - Unexpected keys: {len(unexpected)}")
+                                    success_count += 1
+                                    
+                                except Exception as e:
+                                    print(f"❌ RGB LoRA权重加载失败: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            
+                            if success_count > 0:
+                                print(f"\n✅ 从Lightning checkpoint成功加载RGB LoRA权重")
+                            else:
+                                print("\n❌ 没有成功加载RGB LoRA权重")
+                                
+                        else:
+                            print("❌ Checkpoint格式无效，缺少state_dict")
+                    
+                    elif os.path.isdir(args.rgb_lora_path):
+                        # 标准的PEFT格式目录
+                        print("检测到PEFT目录格式，使用标准LoRA加载方式...")
+                        
+                        if hasattr(i23d_worker, 'model'):
+                            try:
+                                print("正在加载RGB LoRA权重到主DiT模型...")
+                                print(f"  模型类型: {type(i23d_worker.model)}")
+                                print(f"  LoRA路径: {args.rgb_lora_path}")
+                                
+                                # 直接对 pipeline.model 应用 LoRA
+                                i23d_worker.model = PeftModel.from_pretrained(
+                                    i23d_worker.model, args.rgb_lora_path)
+                                
+                                print("✅ RGB LoRA权重加载成功")
+                            except Exception as e:
+                                print(f"❌ RGB LoRA权重加载失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print("❌ Pipeline没有model属性")
+                    else:
+                        print(f"❌ 不支持的RGB LoRA权重格式: {args.rgb_lora_path}")
+                        
+                except Exception as e:
+                    import traceback
+                    print(f"❌ 加载RGB LoRA 权重时发生异常: {e}")
+                    print("详细错误信息:")
+                    traceback.print_exc()
+                    print("将使用基础RGB条件模型")
+            else:
+                if args.rgb_lora_path:
+                    print(f"RGB LoRA 路径不存在: {args.rgb_lora_path}")
+                print("使用基础RGB条件模型（未加载LoRA权重）")
+        
         # 无论是否加载LoRA，在多视图深度模式下都要设置正确的image processor和encoder
         if MULTIVIEW_DEPTH_MODE and hasattr(i23d_worker, 'image_processor'):
             from hy3dshape.preprocessors import MVImageProcessorV2
@@ -1958,6 +2105,46 @@ if __name__ == '__main__':
             
             i23d_worker.image_processor = MVImageProcessorV2(size=518)
             print("✅ 已设置MVImageProcessorV2用于多视图法线处理")
+            
+            # 检查并替换conditioner中的encoder
+            if hasattr(i23d_worker, 'conditioner'):
+                if hasattr(i23d_worker.conditioner, 'main_image_encoder'):
+                    current_encoder = i23d_worker.conditioner.main_image_encoder
+                    # 如果当前encoder不是DinoImageEncoderMV，则替换
+                    if not isinstance(current_encoder, DinoImageEncoderMV):
+                        print(f"检测到当前encoder类型: {type(current_encoder).__name__}")
+                        print("正在替换为DinoImageEncoderMV...")
+                        
+                        # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
+                        new_encoder = DinoImageEncoderMV(
+                            version='facebook/dinov2-large',
+                            image_size=518,
+                            use_cls_token=True,
+                            view_num=args.num_views
+                        )
+                        
+                        # 如果原encoder有已加载的模型权重，尝试复用
+                        if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):
+                            try:
+                                new_encoder.model.load_state_dict(current_encoder.model.state_dict())
+                                print("✅ 已复用原encoder的模型权重")
+                            except Exception as e:
+                                print(f"⚠️ 无法复用原encoder权重，使用默认权重: {e}")
+                        
+                        # 将新encoder移到相同设备和数据类型
+                        new_encoder = new_encoder.to(args.device, dtype=i23d_worker.dtype)
+                        
+                        # 替换encoder
+                        i23d_worker.conditioner.main_image_encoder = new_encoder
+                        print(f"✅ 已成功替换为DinoImageEncoderMV (视图数量: {args.num_views})")
+        
+        # 在多视图RGB模式下也要设置正确的image processor和encoder
+        if MULTIVIEW_RGB_MODE and hasattr(i23d_worker, 'image_processor'):
+            from hy3dshape.preprocessors import MVImageProcessorV2
+            from hy3dshape.models.conditioner import DinoImageEncoderMV
+            
+            i23d_worker.image_processor = MVImageProcessorV2(size=518)
+            print("✅ 已设置MVImageProcessorV2用于多视图RGB处理")
             
             # 检查并替换conditioner中的encoder
             if hasattr(i23d_worker, 'conditioner'):

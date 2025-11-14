@@ -20,8 +20,8 @@ else
     LIGHTNING_DIRS=(
         "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt"
         "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt"
-        "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints/ckpt"
-        "./output_folder/dit/multiview_rgb_lora_checkpoints/ckpt"
+        "hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt"
+        "output_folder/dit/multiview_rgb_lora_finetuning/ckpt"
     )
 
     echo "正在查找最新的checkpoint..."
@@ -45,6 +45,8 @@ if [ -z "$RGB_LORA_PATH" ]; then
     PEFT_DIRS=(
         "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints"
         "./output_folder/dit/multiview_rgb_lora_checkpoints"
+        "hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints"
+        "output_folder/dit/multiview_rgb_lora_checkpoints"
     )
     
     for dir in "${PEFT_DIRS[@]}"; do
