@@ -17,8 +17,21 @@ from rembg import remove, new_session
 
 
 class BackgroundRemover():
-    def __init__(self):
-        self.session = new_session()
+    def __init__(self, model_name='u2net'):
+        """
+        初始化背景移除器
+        
+        Args:
+            model_name (str): rembg模型名称，可选值包括：
+                - 'u2net': 默认模型，通用场景
+                - 'u2netp': 轻量级模型，速度更快
+                - 'u2net_human_seg': 专门用于人物分割
+                - 'silueta': Silueta模型
+                - 'isnet-general-use': ISNet通用模型
+                - 'sam': Segment Anything Model (需要额外配置)
+        """
+        self.model_name = model_name
+        self.session = new_session(model_name=model_name)
 
     def __call__(self, image: Image.Image):
         output = remove(image, session=self.session, bgcolor=[255, 255, 255, 0])

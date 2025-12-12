@@ -517,7 +517,7 @@ def _gen_shape(
             normal_provided = any([mv_normal_front, mv_normal_back, mv_normal_left, mv_normal_right])
             if not normal_provided:
                 raise gr.Error("多视图法线模式下至少需要提供一个视图的法线图。")
-        
+
         # 多视图RGB模式不需要验证法线图或深度图，只需要RGB图像
 
     seed = int(randomize_seed_fn(seed, randomize_seed))
@@ -554,18 +554,25 @@ def _gen_shape(
 
     # remove disk io to make responding faster, uncomment at your will.
     # image.save(os.path.join(save_folder, 'input.png'))
+    # 保存 rembg 处理后的图像用于可视化
+    rembg_images = {}
+    
     if MV_MODE:
         start_time = time.time()
         for k, v in image.items():
             if check_box_rembg or v.mode == "RGB":
                 img = rmbg_worker(v.convert('RGB'))
                 image[k] = img
+                # 保存 rembg 结果用于可视化
+                rembg_images[k] = img.copy() if hasattr(img, 'copy') else img
         time_meta['remove background'] = time.time() - start_time
     else:
         if check_box_rembg or image.mode == "RGB":
             start_time = time.time()
             image = rmbg_worker(image.convert('RGB'))
             time_meta['remove background'] = time.time() - start_time
+            # 保存 rembg 结果用于可视化
+            rembg_images['single'] = image.copy() if hasattr(image, 'copy') else image
 
     # remove disk io to make responding faster, uncomment at your will.
     # image.save(os.path.join(save_folder, 'rembg.png'))
@@ -692,7 +699,7 @@ def _gen_shape(
 
     stats['time'] = time_meta
     main_image = image if not MV_MODE else image['front']
-    return mesh, main_image, save_folder, stats, seed
+    return mesh, main_image, save_folder, stats, seed, rembg_images
 
 @spaces.GPU(duration=60)
 def generation_all(
@@ -722,7 +729,7 @@ def generation_all(
     randomize_seed: bool = False,
 ):
     start_time_0 = time.time()
-    mesh, image, save_folder, stats, seed = _gen_shape(
+    mesh, image, save_folder, stats, seed, rembg_images = _gen_shape(
         caption,
         image,
         depth_file=depth_file,  # 传递单视图深度图参数
@@ -790,12 +797,30 @@ def generation_all(
                                                          width=HTML_WIDTH, textured=True)
     if args.low_vram_mode:
         torch.cuda.empty_cache()
+    
+    # 准备 rembg 图像的返回值
+    if MV_MODE:
+        rembg_front = rembg_images.get('front', None)
+        rembg_right = rembg_images.get('right', None)
+        rembg_back = rembg_images.get('back', None)
+        rembg_left = rembg_images.get('left', None)
+    else:
+        # 单视图模式：只返回单个图像，其他为 None
+        rembg_front = rembg_images.get('single', None)
+        rembg_right = None
+        rembg_back = None
+        rembg_left = None
+    
     return (
         gr.update(value=path),
         gr.update(value=glb_path_textured),
         model_viewer_html_textured,
         stats,
         seed,
+        rembg_front,
+        rembg_right,
+        rembg_back,
+        rembg_left,
     )
 
 @spaces.GPU(duration=60)
@@ -826,7 +851,7 @@ def shape_generation(
     randomize_seed: bool = False,
 ):
     start_time_0 = time.time()
-    mesh, image, save_folder, stats, seed = _gen_shape(
+    mesh, image, save_folder, stats, seed, rembg_images = _gen_shape(
         caption,
         image,
         depth_file=depth_file,  # 传递单视图深度图参数
@@ -866,11 +891,29 @@ def shape_generation(
     
     if args.low_vram_mode:
         torch.cuda.empty_cache()
+    
+    # 准备 rembg 图像的返回值
+    if MV_MODE:
+        rembg_front = rembg_images.get('front', None)
+        rembg_right = rembg_images.get('right', None)
+        rembg_back = rembg_images.get('back', None)
+        rembg_left = rembg_images.get('left', None)
+    else:
+        # 单视图模式：只返回单个图像，其他为 None
+        rembg_front = rembg_images.get('single', None)
+        rembg_right = None
+        rembg_back = None
+        rembg_left = None
+    
     return (
         gr.update(value=path),
         model_viewer_html,
         stats,
         seed,
+        rembg_front,
+        rembg_right,
+        rembg_back,
+        rembg_left,
     )
 
 
@@ -1285,6 +1328,25 @@ Fast for very complex cases, Standard seldom use.',
                         with gr.Row():
                             gr.Examples(examples=example_is, inputs=[image],
                                         label=None, examples_per_page=18)
+            
+            # 新增：显示 rembg 处理后的图像
+            with gr.Column(scale=3) as rembg_column:
+                gr.Markdown("### 背景移除结果预览")
+                with gr.Tabs(selected='rembg_preview') as rembg_tabs:
+                    with gr.Tab('RemBG Results', id='rembg_preview'):
+                        if MV_MODE:
+                            with gr.Row():
+                                rembg_front = gr.Image(label='Front (RemBG)', type='pil', height=200, visible=True)
+                                rembg_right = gr.Image(label='Right (RemBG)', type='pil', height=200, visible=True)
+                            with gr.Row():
+                                rembg_back = gr.Image(label='Back (RemBG)', type='pil', height=200, visible=True)
+                                rembg_left = gr.Image(label='Left (RemBG)', type='pil', height=200, visible=True)
+                        else:
+                            # 单视图模式下，只显示一个图像，其他视图设为不可见
+                            rembg_front = gr.Image(label='RemBG Result', type='pil', height=400, visible=True)
+                            rembg_right = gr.Image(label='Right (RemBG)', type='pil', height=200, visible=False)
+                            rembg_back = gr.Image(label='Back (RemBG)', type='pil', height=200, visible=False)
+                            rembg_left = gr.Image(label='Left (RemBG)', type='pil', height=200, visible=False)
 
         tab_ip.select(fn=lambda: gr.update(selected='tab_img_gallery'), outputs=gallery)
         #if HAS_T2I:
@@ -1318,7 +1380,7 @@ Fast for very complex cases, Standard seldom use.',
                 num_chunks,
                 randomize_seed,
             ],
-            outputs=[file_out, html_gen_mesh, stats, seed]
+            outputs=[file_out, html_gen_mesh, stats, seed, rembg_front, rembg_right, rembg_back, rembg_left]
         ).then(
             lambda: (gr.update(visible=False, value=False), gr.update(interactive=True), gr.update(interactive=True),
                      gr.update(interactive=False)),
@@ -1356,7 +1418,7 @@ Fast for very complex cases, Standard seldom use.',
                 num_chunks,
                 randomize_seed,
             ],
-            outputs=[file_out, file_out2, html_gen_mesh, stats, seed]
+            outputs=[file_out, file_out2, html_gen_mesh, stats, seed, rembg_front, rembg_right, rembg_back, rembg_left]
         ).then(
             lambda: (gr.update(visible=True, value=True), gr.update(interactive=False), gr.update(interactive=True),
                      gr.update(interactive=False)),
@@ -1462,6 +1524,9 @@ if __name__ == '__main__':
     parser.add_argument('--normal_lora_path', type=str, default=None, help='Path to normal LoRA checkpoint')
     parser.add_argument('--rgb_lora_path', type=str, default=None, help='Path to RGB LoRA checkpoint')
     parser.add_argument('--num_views', type=int, default=4, help='Number of views for multi-view model (default: 4)')
+    parser.add_argument('--rembg_model', type=str, default='u2net_human_seg', 
+                        choices=['u2net', 'u2netp', 'u2net_human_seg', 'silueta', 'isnet-general-use'],
+                        help='rembg background removal model (default: u2net). Options: u2net (default, general), u2netp (lightweight, faster), u2net_human_seg (human segmentation), silueta, isnet-general-use')
     args = parser.parse_args()
     args.enable_flashvdm = False
 
@@ -1551,7 +1616,8 @@ if __name__ == '__main__':
     from hy3dshape.pipelines import export_to_trimesh
     from hy3dshape.rembg import BackgroundRemover
 
-    rmbg_worker = BackgroundRemover()
+    print(f"正在初始化背景移除器，使用模型: {args.rembg_model}")
+    rmbg_worker = BackgroundRemover(model_name=args.rembg_model)
     
     # 根据是否启用深度模式、法线模式或RGB模式来加载模型
     if DEPTH_MODE or MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
