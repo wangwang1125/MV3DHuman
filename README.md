@@ -96,6 +96,7 @@ We test our model with Python 3.10 and PyTorch 2.5.1+cu124.
 ```bash
 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
+pip install bpy==3.6.0 --extra-index-url https://download.blender.org/pypi/
 
 cd hy3dpaint/custom_rasterizer
 pip install -e .
