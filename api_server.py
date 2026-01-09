@@ -44,6 +44,10 @@ from model_worker import ModelWorker
 # Global variables
 SAVE_DIR = DEFAULT_SAVE_DIR
 worker_id = str(uuid.uuid4())[:6]
+
+# Ensure SAVE_DIR exists before creating logger
+os.makedirs(SAVE_DIR, exist_ok=True)
+
 logger = build_logger("controller", f"{SAVE_DIR}/controller.log")
 
 # Global worker and semaphore instances
