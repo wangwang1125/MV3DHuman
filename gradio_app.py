@@ -423,6 +423,281 @@ def validate_depth_file(file_path):
         return False
 
 
+def enable_cpu_offload_for_pipeline(pipeline, gpu_id=0):
+    """
+    为 Hunyuan3DDiTPipeline 启用 CPU offload
+    由于该 pipeline 没有 components 属性，需要手动处理各个组件
+    
+    Args:
+        pipeline: Hunyuan3DDiTFlowMatchingPipeline 实例
+        gpu_id: GPU ID，默认0
+    """
+    try:
+        from accelerate import cpu_offload_with_hook
+    except ImportError:
+        raise ImportError("`enable_cpu_offload_for_pipeline` requires `accelerate v0.17.0` or higher.")
+    
+    device = torch.device(f"cuda:{gpu_id}")
+    
+    # 先将所有模型移到CPU
+    if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+        pipeline.vae.to("cpu")
+    if hasattr(pipeline, 'model') and pipeline.model is not None:
+        pipeline.model.to("cpu")
+    if hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+        pipeline.conditioner.to("cpu")
+    if hasattr(pipeline, 'controlnet') and pipeline.controlnet is not None:
+        pipeline.controlnet.to("cpu")
+    
+    # 清理GPU缓存
+    torch.cuda.empty_cache()
+    
+    # 按照 model_cpu_offload_seq 的顺序设置 offload hooks
+    # 顺序: conditioner->model->vae
+    pipeline._all_hooks = []
+    hook = None
+    
+    # 1. Conditioner
+    if hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+        if isinstance(pipeline.conditioner, torch.nn.Module):
+            _, hook = cpu_offload_with_hook(pipeline.conditioner, device, prev_module_hook=hook)
+            pipeline._all_hooks.append(hook)
+    
+    # 2. Model
+    if hasattr(pipeline, 'model') and pipeline.model is not None:
+        if isinstance(pipeline.model, torch.nn.Module):
+            _, hook = cpu_offload_with_hook(pipeline.model, device, prev_module_hook=hook)
+            pipeline._all_hooks.append(hook)
+    
+    # 3. VAE
+    if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+        if isinstance(pipeline.vae, torch.nn.Module):
+            _, hook = cpu_offload_with_hook(pipeline.vae, device, prev_module_hook=hook)
+            pipeline._all_hooks.append(hook)
+    
+    # ControlNet（如果有）不需要在序列中，因为它会被单独调用
+    if hasattr(pipeline, 'controlnet') and pipeline.controlnet is not None:
+        if isinstance(pipeline.controlnet, torch.nn.Module):
+            _, hook = cpu_offload_with_hook(pipeline.controlnet, device)
+            pipeline._all_hooks.append(hook)
+    
+    pipeline._offload_gpu_id = gpu_id
+    print(f"  ✅ CPU offload hooks 已设置，将使用 GPU {gpu_id}")
+
+
+def setup_multi_gpu_model_parallel(pipeline, gpu_ids):
+    """
+    将模型的不同组件分配到不同的GPU上，实现模型并行
+    注意：不拆分model内部的blocks，而是将整个组件分配到不同GPU
+    
+    Args:
+        pipeline: Hunyuan3DDiTFlowMatchingPipeline 实例
+        gpu_ids: GPU ID列表，例如 [0, 1]
+    
+    Returns:
+        pipeline: 配置好的pipeline
+    """
+    if not isinstance(gpu_ids, list):
+        gpu_ids = [int(x.strip()) for x in gpu_ids.split(',') if x.strip()]
+    
+    num_gpus = len(gpu_ids)
+    if num_gpus < 2:
+        print(f"⚠️ 需要至少2个GPU才能使用模型并行，当前只有 {num_gpus} 个GPU")
+        return pipeline
+    
+    print(f"🔄 正在配置模型并行，使用GPU: {gpu_ids}")
+    
+    try:
+        # 策略：将大组件分离到不同GPU以最大化显存利用率
+        # GPU 0: Conditioner (编码器，相对较小) + ControlNet
+        # GPU 1: Model (主模型，占用最多显存) + VAE (解码器)
+        
+        conditioner_gpu = gpu_ids[0]  # Conditioner放在第一个GPU
+        model_gpu = gpu_ids[1] if len(gpu_ids) > 1 else gpu_ids[0]  # Model放在第二个GPU
+        vae_gpu = model_gpu  # VAE和Model放在同一个GPU，避免解码时的数据传输
+        
+        # 将conditioner放在第一个GPU（相对较小）
+        if hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+            pipeline.conditioner.to(f'cuda:{conditioner_gpu}')
+            print(f"  ✅ Conditioner已移至 GPU {conditioner_gpu}")
+        
+        # 将model放在第二个GPU（最大的组件，需要最多显存）
+        if hasattr(pipeline, 'model') and pipeline.model is not None:
+            pipeline.model.to(f'cuda:{model_gpu}')
+            print(f"  ✅ Model已移至 GPU {model_gpu} (主模型，占用最多显存)")
+        
+        # 将VAE放在最后一个GPU
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            pipeline.vae.to(f'cuda:{vae_gpu}')
+            print(f"  ✅ VAE已移至 GPU {vae_gpu}")
+        
+        # 将controlnet（如果有）放在第一个GPU（和conditioner一起）
+        if hasattr(pipeline, 'controlnet') and pipeline.controlnet is not None:
+            pipeline.controlnet.to(f'cuda:{conditioner_gpu}')
+            print(f"  ✅ ControlNet已移至 GPU {conditioner_gpu}")
+        
+        # 将scheduler保持在CPU（通常很小）
+        # scheduler通常是状态对象，不需要GPU，保持原样即可
+        
+        pipeline._conditioner_gpu = conditioner_gpu
+        pipeline._model_gpu = model_gpu
+        pipeline._vae_gpu = vae_gpu
+        pipeline._primary_gpu = conditioner_gpu  # 默认主GPU用于输入处理
+        
+        # 修改pipeline的device属性，确保latents等在正确的GPU上创建
+        # 注意：这里设置为model_gpu，因为latents主要用于model
+        if hasattr(pipeline, 'device'):
+            # 创建一个device对象指向model所在的GPU
+            original_device = pipeline.device
+            if isinstance(original_device, torch.device):
+                pipeline.device = torch.device(f'cuda:{model_gpu}')
+            else:
+                pipeline.device = f'cuda:{model_gpu}'
+            print(f"  ✅ 已将pipeline默认device设置为 GPU {model_gpu} (用于创建latents等tensors)")
+        
+        # 如果model在GPU 1上，需要包装model来确保所有输入都在正确的GPU上
+        if model_gpu != conditioner_gpu and hasattr(pipeline, 'model') and pipeline.model is not None:
+            original_model_call = pipeline.model.__call__
+            
+            def model_wrapper(*args, **kwargs):
+                # 将所有输入tensor移动到model所在的GPU
+                args_list = []
+                for arg in args:
+                    if isinstance(arg, torch.Tensor):
+                        # 检查设备索引，如果不在model_gpu上就移动
+                        if arg.device.index != model_gpu:
+                            args_list.append(arg.to(f'cuda:{model_gpu}'))
+                        else:
+                            args_list.append(arg)
+                    else:
+                        args_list.append(arg)
+                
+                # 处理kwargs中的tensors
+                new_kwargs = {}
+                for k, v in kwargs.items():
+                    if isinstance(v, torch.Tensor):
+                        if v.device.index != model_gpu:
+                            new_kwargs[k] = v.to(f'cuda:{model_gpu}')
+                        else:
+                            new_kwargs[k] = v
+                    elif isinstance(v, dict):
+                        # 如果是字典，递归处理其中的tensors
+                        processed_dict = {}
+                        for dict_k, dict_v in v.items():
+                            if isinstance(dict_v, torch.Tensor):
+                                if dict_v.device.index != model_gpu:
+                                    processed_dict[dict_k] = dict_v.to(f'cuda:{model_gpu}')
+                                else:
+                                    processed_dict[dict_k] = dict_v
+                            else:
+                                processed_dict[dict_k] = dict_v
+                        new_kwargs[k] = processed_dict
+                    else:
+                        new_kwargs[k] = v
+                
+                result = original_model_call(*args_list, **new_kwargs)
+                return result
+            
+            pipeline.model.__call__ = model_wrapper
+            print(f"  ✅ 已为Model添加设备自动移动包装（所有输入将自动移动到 GPU {model_gpu}）")
+        
+        # 如果conditioner和model在不同的GPU上，需要包装conditioner来移动输出
+        if conditioner_gpu != model_gpu and hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+            original_conditioner_forward = pipeline.conditioner.forward
+            original_conditioner_unconditional = pipeline.conditioner.unconditional_embedding
+            
+            def conditioner_wrapper(*args, **kwargs):
+                result = original_conditioner_forward(*args, **kwargs)
+                # 将结果移动到model所在的GPU
+                if isinstance(result, dict):
+                    result = {k: v.to(f'cuda:{model_gpu}') if isinstance(v, torch.Tensor) else v 
+                             for k, v in result.items()}
+                elif isinstance(result, torch.Tensor):
+                    result = result.to(f'cuda:{model_gpu}')
+                return result
+            
+            def unconditional_wrapper(*args, **kwargs):
+                result = original_conditioner_unconditional(*args, **kwargs)
+                # 将结果移动到model所在的GPU
+                if isinstance(result, dict):
+                    result = {k: v.to(f'cuda:{model_gpu}') if isinstance(v, torch.Tensor) else v 
+                             for k, v in result.items()}
+                elif isinstance(result, torch.Tensor):
+                    result = result.to(f'cuda:{model_gpu}')
+                return result
+            
+            pipeline.conditioner.forward = conditioner_wrapper
+            pipeline.conditioner.unconditional_embedding = unconditional_wrapper
+            print(f"  ✅ 已为Conditioner添加设备自动移动包装（输出将自动移动到 GPU {model_gpu}）")
+        
+        # 如果VAE在不同的GPU上，需要创建一个包装函数来处理设备移动（通常不需要，因为VAE和Model在同一GPU）
+        if vae_gpu != model_gpu and hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            original_vae_call = pipeline.vae.__call__
+            original_latents2mesh = pipeline.vae.latents2mesh
+            
+            def vae_wrapper(*args, **kwargs):
+                # 确保输入在正确的设备上
+                args_list = list(args)
+                for i, arg in enumerate(args_list):
+                    if isinstance(arg, torch.Tensor) and arg.device.index != vae_gpu:
+                        args_list[i] = arg.to(f'cuda:{vae_gpu}')
+                # 转换kwargs中的tensors
+                new_kwargs = {}
+                for k, v in kwargs.items():
+                    if isinstance(v, torch.Tensor) and v.device.index != vae_gpu:
+                        new_kwargs[k] = v.to(f'cuda:{vae_gpu}')
+                    else:
+                        new_kwargs[k] = v
+                result = original_vae_call(*args_list, **new_kwargs)
+                return result
+            
+            def latents2mesh_wrapper(*args, **kwargs):
+                # 确保输入在正确的设备上
+                args_list = list(args)
+                for i, arg in enumerate(args_list):
+                    if isinstance(arg, torch.Tensor) and arg.device.index != vae_gpu:
+                        args_list[i] = arg.to(f'cuda:{vae_gpu}')
+                # 转换kwargs中的tensors
+                new_kwargs = {}
+                for k, v in kwargs.items():
+                    if isinstance(v, torch.Tensor) and v.device.index != vae_gpu:
+                        new_kwargs[k] = v.to(f'cuda:{vae_gpu}')
+                    else:
+                        new_kwargs[k] = v
+                result = original_latents2mesh(*args_list, **new_kwargs)
+                return result
+            
+            pipeline.vae.__call__ = vae_wrapper
+            pipeline.vae.latents2mesh = latents2mesh_wrapper
+            print(f"  ✅ 已为VAE添加设备自动移动包装（自动将数据移动到 GPU {vae_gpu}）")
+        
+        print(f"✅ 模型并行配置完成")
+        print(f"   - GPU {conditioner_gpu}: Conditioner + ControlNet (编码阶段)")
+        print(f"   - GPU {model_gpu}: Model + VAE (主计算+解码阶段)")
+        
+        # 清理所有GPU的缓存
+        for gpu_id in gpu_ids:
+            torch.cuda.set_device(gpu_id)
+            torch.cuda.empty_cache()
+        
+    except Exception as e:
+        print(f"⚠️ 模型并行配置失败: {e}")
+        import traceback
+        traceback.print_exc()
+        print("  回退到单GPU模式")
+        # 将所有模型移回主GPU
+        if hasattr(pipeline, '_primary_gpu'):
+            primary_gpu = pipeline._primary_gpu
+            if hasattr(pipeline, 'model') and pipeline.model is not None:
+                pipeline.model.to(f'cuda:{primary_gpu}')
+            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+                pipeline.vae.to(f'cuda:{primary_gpu}')
+            if hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+                pipeline.conditioner.to(f'cuda:{primary_gpu}')
+    
+    return pipeline
+
+
 def build_model_viewer_html(save_folder, height=660, width=790, textured=False):
     # Remove first folder from path to make relative path
     if textured:
@@ -658,6 +933,10 @@ def _gen_shape(
     generator = torch.Generator()
     generator = generator.manual_seed(int(seed))
     
+    # 在 low_vram_mode 下清理显存缓存
+    if args.low_vram_mode:
+        torch.cuda.empty_cache()
+    
     # 准备模型输入
     model_inputs = {
         'image': image,
@@ -689,6 +968,31 @@ def _gen_shape(
     outputs = i23d_worker(**model_inputs)
     time_meta['shape generation'] = time.time() - start_time
     logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
+    
+    # 在 low_vram_mode 下推理后清理显存缓存
+    if args.low_vram_mode:
+        torch.cuda.empty_cache()
+    
+    # 如果使用了 CPU offload，调用 maybe_free_model_hooks 或手动清理
+    if args.low_vram_mode and hasattr(i23d_worker, '_all_hooks') and i23d_worker._all_hooks:
+        try:
+            # 先尝试使用 pipeline 自带的 maybe_free_model_hooks 方法
+            if hasattr(i23d_worker, 'maybe_free_model_hooks'):
+                i23d_worker.maybe_free_model_hooks()
+            else:
+                # 手动清理 hooks（自定义 CPU offload 的情况）
+                for hook in i23d_worker._all_hooks:
+                    try:
+                        hook.offload()
+                        hook.remove()
+                    except:
+                        pass
+                # 重新设置 hooks
+                if hasattr(i23d_worker, '_offload_gpu_id'):
+                    enable_cpu_offload_for_pipeline(i23d_worker, gpu_id=i23d_worker._offload_gpu_id)
+        except Exception as e:
+            # 如果清理失败，至少清理显存缓存
+            torch.cuda.empty_cache()
 
     tmp_start = time.time()
     mesh = export_to_trimesh(outputs)[0]
@@ -1515,7 +1819,9 @@ if __name__ == '__main__':
     parser.add_argument('--disable_tex', action='store_true')
     parser.add_argument('--enable_flashvdm', action='store_true')
     parser.add_argument('--compile', action='store_true')
-    parser.add_argument('--low_vram_mode', action='store_true')
+    parser.add_argument('--low_vram_mode', action='store_true', help='Enable low VRAM mode with CPU offload')
+    parser.add_argument('--use_multi_gpu', action='store_true', help='Use multiple GPUs for model parallel inference')
+    parser.add_argument('--gpu_ids', type=str, default='0', help='Comma-separated GPU IDs to use (e.g., "0,1" for GPU 0 and 1)')
     parser.add_argument('--enable_depth', action='store_true', help='Enable depth-conditioned model (RGBD mode)')
     parser.add_argument('--enable_multiview_depth', action='store_true', help='Enable multi-view depth-conditioned model')
     parser.add_argument('--enable_multiview_normal', action='store_true', help='Enable multi-view normal-conditioned model')
@@ -2256,6 +2562,40 @@ if __name__ == '__main__':
         i23d_worker.enable_flashvdm(mc_algo=mc_algo)
     if args.compile:
         i23d_worker.compile()
+    
+    # 多GPU模型并行配置
+    if args.use_multi_gpu:
+        primary_gpu = int(args.gpu_ids.split(',')[0].strip())
+        args.device = f'cuda:{primary_gpu}'
+        print(f"🚀 启用多GPU模型并行，主GPU: {primary_gpu}")
+        i23d_worker = setup_multi_gpu_model_parallel(i23d_worker, args.gpu_ids)
+        # 清理所有GPU的显存缓存
+        for gpu_id in [int(x.strip()) for x in args.gpu_ids.split(',') if x.strip()]:
+            torch.cuda.set_device(gpu_id)
+            torch.cuda.empty_cache()
+    
+    # 在 low_vram_mode 下启用 CPU offload 以减少显存使用
+    # 注意：多GPU模式和CPU offload不能同时使用
+    if args.low_vram_mode and args.device.startswith('cuda') and not args.use_multi_gpu:
+        print("启用 low_vram_mode: 使用 CPU offload 减少显存占用...")
+        try:
+            # 先尝试使用 pipeline 自带的 enable_model_cpu_offload 方法
+            if hasattr(i23d_worker, 'components'):
+                i23d_worker.enable_model_cpu_offload(gpu_id=int(args.device.split(':')[1]) if ':' in args.device else 0)
+                print("✅ CPU offload 已启用（使用 pipeline 自带方法）")
+            else:
+                # 如果没有 components 属性，使用自定义的 CPU offload 函数
+                gpu_id = int(args.device.split(':')[1]) if ':' in args.device else 0
+                enable_cpu_offload_for_pipeline(i23d_worker, gpu_id=gpu_id)
+                print("✅ CPU offload 已启用（使用自定义方法）")
+        except Exception as e:
+            print(f"⚠️ CPU offload 启用失败，将使用常规模式: {e}")
+            import traceback
+            traceback.print_exc()
+        # 清理显存缓存
+        torch.cuda.empty_cache()
+    elif args.low_vram_mode and args.use_multi_gpu:
+        print("⚠️ 多GPU模式和CPU offload不能同时使用，已禁用CPU offload")
 
     floater_remove_worker = FloaterRemover()
     degenerate_face_remove_worker = DegenerateFaceRemover()

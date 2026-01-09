@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动多视图RGB重建 Gradio 界面（仅四视图彩色图像，不使用法线图）
+# 启动多视图RGB重建 API 服务器
 
 # 设置默认参数
 MODEL_PATH="tencent/Hunyuan3D-2.1"
@@ -7,10 +7,11 @@ SUBFOLDER="hunyuan3d-dit-v2-1"
 PORT=6008
 HOST="0.0.0.0"
 DEVICE="cuda"
+CONCURRENCY=2  # 多视图模式建议降低并发数
 
 # 多视图RGB LoRA权重路径（根据实际情况修改）
 # 优先级：Lightning checkpoint (.ckpt) > PEFT格式 (step_*)
-RGB_LORA_PATH="./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints"
+RGB_LORA_PATH=""
 
 # 1. 首先检查是否已指定具体的checkpoint路径
 if [ -n "$RGB_LORA_PATH" ] && [ -f "$RGB_LORA_PATH" ]; then
@@ -84,25 +85,36 @@ else
     echo "✅ 使用LoRA权重: $RGB_LORA_PATH"
 fi
 
-# 启动Gradio应用
+# 启动API服务器
 echo ""
 echo "================================================"
-echo "启动多视图RGB重建 Gradio 界面"
+echo "启动多视图RGB重建 API 服务器"
 echo "================================================"
 echo "模型: $MODEL_PATH / $SUBFOLDER"
 echo "端口: $PORT"
 echo "地址: http://$HOST:$PORT"
-echo "模式: 仅四视图RGB重建（不使用法线图）"
+echo "并发数: $CONCURRENCY"
+echo "模式: 4视图RGB重建（不使用法线图或深度图）"
+echo "================================================"
+echo ""
+echo "API 文档: http://$HOST:$PORT/docs"
+echo "API 端点:"
+echo "  - POST /generate - 同步生成"
+echo "  - POST /send - 异步生成"
+echo "  - GET /status/{uid} - 查询状态"
+echo "  - GET /health - 健康检查"
+echo ""
+echo "测试脚本: python test_multiview_api.py"
 echo "================================================"
 echo ""
 
-python gradio_app.py \
+python api_server.py \
     --model_path "$MODEL_PATH" \
     --subfolder "$SUBFOLDER" \
     --enable_multiview_rgb \
     $LORA_ARG \
+    --num_views 4 \
     --port $PORT \
     --host "$HOST" \
     --device "$DEVICE" \
-    --num_views 4
-
+    --limit-model-concurrency $CONCURRENCY

@@ -193,3 +193,16 @@ exploration.
  </picture>
 </a>
 # MV3DHuman
+
+docker build -t hunyuan3d21:latest -f docker/Dockerfile .
+base_dir = os.environ.get('HY3DGEN_MODELS')
+
+# 第一次：构建 base 镜像（耗时，但只需一次）
+docker build -f docker/Dockerfile.python-base -t hunyuan3d21-python-base:cu124 .
+
+# 之后每次：构建应用镜像（快速，base 从缓存使用）
+export DOCKER_BUILDKIT=1  # 启用 BuildKit 加速
+docker build -f docker/Dockerfile -t hunyuan3d21:latest .
+docker save hunyuan3d21:latest -o /mnt/g/hunyuan3d21-latest.tar
+
+docker load -i hunyuan3d21-latest.tar

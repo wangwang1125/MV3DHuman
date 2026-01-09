@@ -199,11 +199,55 @@ if __name__ == "__main__":
     parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2.1')
     parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-1')
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--limit-model-concurrency", type=int, default=5)
+    parser.add_argument("--limit-model-concurrency", type=int, default=2,
+                        help="Maximum number of concurrent model inference (default: 2 for multi-view)")
     parser.add_argument('--low_vram_mode', action='store_true')
     parser.add_argument('--cache-path', type=str, default='./gradio_cache')
+    parser.add_argument('--enable_multiview_rgb', action='store_true',
+                        help='Enable multi-view RGB reconstruction mode (4 views)')
+    parser.add_argument('--rgb_lora_path', type=str, default=None,
+                        help='Path to RGB LoRA checkpoint (Lightning .ckpt or PEFT directory)')
+    parser.add_argument('--num_views', type=int, default=4,
+                        help='Number of views for multi-view reconstruction (fixed to 4)')
     args = parser.parse_args()
     logger.info(f"args: {args}")
+    
+    # Auto-search for RGB LoRA weights if not specified
+    if args.enable_multiview_rgb and args.rgb_lora_path is None:
+        logger.info("RGB LoRA path not specified, searching in default locations...")
+        default_lora_dirs = [
+            "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
+            "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
+            "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints",
+            "./output_folder/dit/multiview_rgb_lora_checkpoints",
+        ]
+        
+        for lora_dir in default_lora_dirs:
+            if os.path.exists(lora_dir):
+                # If it's a directory, look for .ckpt files
+                if os.path.isdir(lora_dir):
+                    ckpt_files = [f for f in os.listdir(lora_dir) if f.endswith('.ckpt')]
+                    if ckpt_files:
+                        # Sort by filename and choose the latest (largest step number)
+                        latest_ckpt = max(ckpt_files, 
+                                        key=lambda x: int(x.split('=')[1].split('.')[0]) if '=' in x else 0)
+                        args.rgb_lora_path = os.path.join(lora_dir, latest_ckpt)
+                        logger.info(f"✅ Auto-discovered RGB LoRA weights: {args.rgb_lora_path}")
+                        break
+                else:
+                    args.rgb_lora_path = lora_dir
+                    break
+        
+        if args.rgb_lora_path is None:
+            logger.warning("⚠️ No RGB LoRA weights found, will use base model")
+    
+    if args.enable_multiview_rgb:
+        logger.info("=" * 60)
+        logger.info("MULTI-VIEW RGB RECONSTRUCTION MODE")
+        logger.info("=" * 60)
+        logger.info(f"Number of views: {args.num_views}")
+        logger.info(f"RGB LoRA path: {args.rgb_lora_path or 'None (using base model)'}")
+        logger.info("=" * 60)
 
     # Update SAVE_DIR based on cache-path argument
     SAVE_DIR = args.cache_path
@@ -215,10 +259,15 @@ if __name__ == "__main__":
     worker = ModelWorker(
         model_path=args.model_path, 
         subfolder=args.subfolder,
+        rgb_lora_path=args.rgb_lora_path if args.enable_multiview_rgb else None,
+        num_views=args.num_views,
         device=args.device, 
         low_vram_mode=args.low_vram_mode,
         worker_id=worker_id,
         model_semaphore=model_semaphore,
         save_dir=SAVE_DIR
     )
+    
+    logger.info(f"Worker initialized successfully (worker_id: {worker_id})")
+    logger.info(f"Starting API server on {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

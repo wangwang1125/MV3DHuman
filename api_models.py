@@ -6,15 +6,30 @@ from pydantic import BaseModel, Field
 
 
 class GenerationRequest(BaseModel):
-    """Request model for 3D generation API"""
-    image: str = Field(
+    """Request model for multi-view 3D generation API"""
+    image_front: str = Field(
         ..., 
-        description="Base64 encoded input image for 3D generation",
+        description="Base64 encoded front view image (0°) for 3D generation",
+        example="iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP8z4AATAxEcQAz0QEHOoQ+uAAAAABJRU5ErkJggg=="
+    )
+    image_right: str = Field(
+        ..., 
+        description="Base64 encoded right view image (90°) for 3D generation",
+        example="iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP8z4AATAxEcQAz0QEHOoQ+uAAAAABJRU5ErkJggg=="
+    )
+    image_back: str = Field(
+        ..., 
+        description="Base64 encoded back view image (180°) for 3D generation",
+        example="iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP8z4AATAxEcQAz0QEHOoQ+uAAAAABJRU5ErkJggg=="
+    )
+    image_left: str = Field(
+        ..., 
+        description="Base64 encoded left view image (270°) for 3D generation",
         example="iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP8z4AATAxEcQAz0QEHOoQ+uAAAAABJRU5ErkJggg=="
     )
     remove_background: bool = Field(
         True,
-        description="Whether to automatically remove background from input image"
+        description="Whether to automatically remove background from input images"
     )
     texture: bool = Field(
         False,

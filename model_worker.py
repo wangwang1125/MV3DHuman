@@ -60,17 +60,21 @@ class ModelWorker:
     def __init__(self,
                  model_path='tencent/Hunyuan3D-2.1',
                  subfolder='hunyuan3d-dit-v2-1',
+                 rgb_lora_path=None,
+                 num_views=4,
                  device='cuda',
                  low_vram_mode=False,
                  worker_id=None,
                  model_semaphore=None,
                  save_dir='gradio_cache'):
         """
-        Initialize the model worker.
+        Initialize the model worker for multi-view RGB reconstruction.
         
         Args:
             model_path (str): Path to the shape generation model
             subfolder (str): Subfolder containing the model files
+            rgb_lora_path (str): Path to RGB LoRA checkpoint (optional)
+            num_views (int): Number of views for multi-view reconstruction (default: 4)
             device (str): Device to run the model on ('cuda' or 'cpu')
             low_vram_mode (bool): Whether to use low VRAM mode
             worker_id (str): Unique identifier for this worker
@@ -78,19 +82,25 @@ class ModelWorker:
             save_dir (str): Directory to save generated files
         """
         self.model_path = model_path
+        self.subfolder = subfolder
+        self.rgb_lora_path = rgb_lora_path
+        self.num_views = num_views
         self.worker_id = worker_id or str(uuid.uuid4())[:6]
         self.device = device
         self.low_vram_mode = low_vram_mode
         self.model_semaphore = model_semaphore
         self.save_dir = save_dir
         
-        logger.info(f"Loading the model {model_path} on worker {self.worker_id} ...")
+        logger.info(f"Loading multi-view RGB model {model_path}/{subfolder} on worker {self.worker_id} ...")
+        logger.info(f"Number of views: {num_views}")
+        if rgb_lora_path:
+            logger.info(f"RGB LoRA path: {rgb_lora_path}")
 
         # Initialize background remover
         self.rembg = BackgroundRemover()
         
-        # Initialize shape generation pipeline (matching demo.py)
-        self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
+        # Initialize multi-view shape generation pipeline
+        self._load_multiview_pipeline()
         
         # Initialize texture generation pipeline (matching demo.py)
         max_num_view = 6  # can be 6 to 9
@@ -101,9 +111,179 @@ class ModelWorker:
         conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
         self.paint_pipeline = Hunyuan3DPaintPipeline(conf)
         # clean cache in save_dir
-        for file in os.listdir(self.save_dir):
-            os.remove(os.path.join(self.save_dir, file))
+        if os.path.exists(self.save_dir):
+            for file in os.listdir(self.save_dir):
+                file_path = os.path.join(self.save_dir, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
             
+    def _load_multiview_pipeline(self):
+        """
+        Load multi-view RGB reconstruction pipeline with optional LoRA weights.
+        Based on gradio_app.py multi-view loading logic.
+        """
+        logger.info("Loading multi-view RGB reconstruction pipeline...")
+        
+        # Load base pipeline
+        self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            self.model_path,
+            subfolder=self.subfolder,
+            use_safetensors=False,
+            device=self.device,
+        )
+        
+        # Load RGB LoRA weights if provided
+        if self.rgb_lora_path and os.path.exists(self.rgb_lora_path):
+            logger.info(f"Loading RGB LoRA weights from: {self.rgb_lora_path}")
+            try:
+                from peft import PeftModel, LoraConfig, get_peft_model
+                
+                # Check if it's Lightning checkpoint format (.ckpt)
+                if self.rgb_lora_path.endswith('.ckpt'):
+                    logger.info("Detected Lightning checkpoint format, loading LoRA weights...")
+                    ckpt = torch.load(self.rgb_lora_path, map_location='cpu')
+                    
+                    if 'state_dict' in ckpt:
+                        state_dict = ckpt['state_dict']
+                        logger.info(f"Checkpoint contains {len(state_dict)} weights")
+                        
+                        # Analyze checkpoint content
+                        lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                        logger.info(f"  - LoRA parameters: {len(lora_keys)}")
+                        
+                        # Load LoRA weights
+                        if lora_keys and hasattr(self.pipeline, 'model'):
+                            try:
+                                logger.info("Loading LoRA weights to DiT model...")
+                                # Extract model weights (including LoRA)
+                                model_state_dict = {}
+                                for key, value in state_dict.items():
+                                    if key.startswith('model.'):
+                                        new_key = key[6:]  # Remove 'model.' prefix
+                                        model_state_dict[new_key] = value
+                                
+                                # Apply LoRA config to base model
+                                lora_config = LoraConfig(
+                                    r=8,
+                                    lora_alpha=8,
+                                    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                    lora_dropout=0.0,
+                                )
+                                self.pipeline.model = get_peft_model(self.pipeline.model, lora_config)
+                                
+                                # Load weights with LoRA
+                                missing, unexpected = self.pipeline.model.load_state_dict(
+                                    model_state_dict, strict=False)
+                                logger.info(f"✅ RGB LoRA weights loaded successfully")
+                                logger.info(f"  - Missing keys: {len(missing)}")
+                                logger.info(f"  - Unexpected keys: {len(unexpected)}")
+                                
+                            except Exception as e:
+                                logger.error(f"❌ RGB LoRA weights loading failed: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                    else:
+                        logger.error("❌ Invalid checkpoint format, missing state_dict")
+                
+                elif os.path.isdir(self.rgb_lora_path):
+                    # Standard PEFT format directory
+                    logger.info("Detected PEFT directory format, using standard LoRA loading...")
+                    
+                    if hasattr(self.pipeline, 'model'):
+                        try:
+                            logger.info("Loading RGB LoRA weights to DiT model...")
+                            logger.info(f"  Model type: {type(self.pipeline.model)}")
+                            logger.info(f"  LoRA path: {self.rgb_lora_path}")
+                            
+                            # Apply LoRA to pipeline.model
+                            self.pipeline.model = PeftModel.from_pretrained(
+                                self.pipeline.model, self.rgb_lora_path)
+                            
+                            logger.info("✅ RGB LoRA weights loaded successfully")
+                        except Exception as e:
+                            logger.error(f"❌ RGB LoRA weights loading failed: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        logger.error("❌ Pipeline has no model attribute")
+                else:
+                    logger.error(f"❌ Unsupported RGB LoRA weight format: {self.rgb_lora_path}")
+                    
+            except Exception as e:
+                import traceback
+                logger.error(f"❌ Exception occurred while loading RGB LoRA weights: {e}")
+                logger.error("Detailed error:")
+                traceback.print_exc()
+                logger.info("Will use base RGB model")
+        else:
+            if self.rgb_lora_path:
+                logger.warning(f"RGB LoRA path does not exist: {self.rgb_lora_path}")
+            logger.info("Using base RGB model (no LoRA weights loaded)")
+        
+        # Replace image processor and encoder for multi-view
+        self._setup_multiview_components()
+
+    def _setup_multiview_components(self):
+        """
+        Replace image processor and encoder with multi-view versions.
+        Based on gradio_app.py multi-view setup logic.
+        """
+        logger.info("Setting up multi-view components...")
+        
+        try:
+            from hy3dshape.preprocessors import MVImageProcessorV2
+            from hy3dshape.models.conditioner import DinoImageEncoderMV
+            
+            # Replace image processor
+            self.pipeline.image_processor = MVImageProcessorV2(size=518)
+            logger.info("✅ Set MVImageProcessorV2 for multi-view RGB processing")
+            
+            # Replace encoder in conditioner
+            if hasattr(self.pipeline, 'conditioner'):
+                if hasattr(self.pipeline.conditioner, 'main_image_encoder'):
+                    current_encoder = self.pipeline.conditioner.main_image_encoder
+                    
+                    # Check if current encoder is not DinoImageEncoderMV
+                    if not isinstance(current_encoder, DinoImageEncoderMV):
+                        logger.info(f"Detected current encoder type: {type(current_encoder).__name__}")
+                        logger.info("Replacing with DinoImageEncoderMV...")
+                        
+                        # Create new DinoImageEncoderMV encoder
+                        new_encoder = DinoImageEncoderMV(
+                            version='facebook/dinov2-large',
+                            image_size=518,
+                            use_cls_token=True,
+                            view_num=self.num_views
+                        )
+                        
+                        # Try to reuse weights from original encoder if possible
+                        if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):
+                            try:
+                                new_encoder.model.load_state_dict(current_encoder.model.state_dict())
+                                logger.info("✅ Reused original encoder model weights")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Cannot reuse original encoder weights, using default: {e}")
+                        
+                        # Move new encoder to same device and dtype
+                        new_encoder = new_encoder.to(self.device, dtype=self.pipeline.dtype)
+                        
+                        # Replace encoder
+                        self.pipeline.conditioner.main_image_encoder = new_encoder
+                        logger.info(f"✅ Successfully replaced with DinoImageEncoderMV (view count: {self.num_views})")
+                    else:
+                        logger.info("✅ Encoder is already DinoImageEncoderMV")
+                else:
+                    logger.warning("⚠️ Conditioner has no main_image_encoder attribute")
+            else:
+                logger.warning("⚠️ Pipeline has no conditioner attribute")
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to setup multi-view components: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
     def get_queue_length(self):
         """
         Get the current queue length for model processing.
@@ -132,36 +312,80 @@ class ModelWorker:
     @torch.inference_mode()
     def generate(self, uid, params):
         """
-        Generate a 3D model from the given parameters.
+        Generate a 3D model from multi-view images.
         
         Args:
             uid: Unique identifier for this generation task
-            params (dict): Generation parameters including image and options
+            params (dict): Generation parameters including 4 view images and options
             
         Returns:
             tuple: (file_path, uid) - Path to generated file and task ID
         """
         start_time = time.time()
-        logger.info(f"Generating 3D model for uid: {uid}")
-        # Handle input image
-        if 'image' in params:
-            image = params["image"]
-            image = load_image_from_base64(image)
+        logger.info(f"Generating 3D model from multi-view images for uid: {uid}")
+        
+        # Parse 4 view images from base64
+        images = {}
+        view_names = ['front', 'right', 'back', 'left']
+        
+        for view in view_names:
+            image_key = f'image_{view}'
+            if image_key in params:
+                try:
+                    images[view] = load_image_from_base64(params[image_key])
+                    logger.info(f"Loaded {view} view image")
+                except Exception as e:
+                    logger.error(f"Failed to load {view} view image: {e}")
+                    raise ValueError(f"Failed to load {view} view image: {str(e)}")
+            else:
+                raise ValueError(f"Missing required view: {view}")
+        
+        if len(images) != 4:
+            raise ValueError(f"Expected 4 views, got {len(images)}")
+        
+        # Remove background from each view if needed
+        if params.get('remove_background', True):
+            logger.info("Removing background from all views...")
+            for view, img in images.items():
+                try:
+                    images[view] = self.rembg(img.convert('RGB'))
+                    logger.info(f"Background removed for {view} view")
+                except Exception as e:
+                    logger.warning(f"Failed to remove background for {view} view: {e}")
+                    # Keep original image if background removal fails
+                    images[view] = img.convert('RGBA')
         else:
-            raise ValueError("No input image provided")
+            # Convert all to RGBA
+            for view, img in images.items():
+                images[view] = img.convert('RGBA')
 
-        # Convert to RGBA and remove background if needed
-        image = image.convert("RGBA")
-        if image.mode == "RGB":
-            image = self.rembg(image)
-
-        # Generate mesh 
+        # Generate mesh from multi-view images
         try:
-            mesh = self.pipeline(image=image)[0]
+            logger.info("Starting multi-view 3D shape generation...")
+            
+            # Prepare generator for reproducibility
+            generator = torch.Generator()
+            if 'seed' in params:
+                generator = generator.manual_seed(int(params['seed']))
+            
+            # Call pipeline with multi-view images (dictionary format)
+            mesh_outputs = self.pipeline(
+                image=images,  # Dictionary format: {'front': img, 'right': img, 'back': img, 'left': img}
+                num_inference_steps=params.get('num_inference_steps', 5),
+                guidance_scale=params.get('guidance_scale', 5.0),
+                generator=generator,
+                octree_resolution=params.get('octree_resolution', 256),
+                num_chunks=params.get('num_chunks', 8000),
+                output_type='mesh'
+            )
+            
+            mesh = mesh_outputs[0]
             logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
         except Exception as e:
-            logger.error(f"Shape generation failed: {e}")
-            raise ValueError(f"Failed to generate 3D mesh: {str(e)}")
+            logger.error(f"Multi-view shape generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise ValueError(f"Failed to generate 3D mesh from multi-view images: {str(e)}")
 
         # Export initial mesh without texture
         
