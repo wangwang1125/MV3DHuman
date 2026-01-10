@@ -401,18 +401,43 @@ class ModelWorker:
             try:
                 loop = asyncio.get_event_loop()
                 
-                # Use semaphore to control concurrent batches
-                if self.model_semaphore:
-                    async with self.model_semaphore:
+                # Fix view_idxs format for batch processing of multi-view images
+                # The prepare_image method returns view_idxs as [[[0,1,2,3]], [[0,1,2,3]], ...]
+                # but conditioner expects [[0,1,2,3], [0,1,2,3], ...]
+                original_prepare_image = self.pipeline.prepare_image
+                
+                def fixed_prepare_image(image, mask=None):
+                    result = original_prepare_image(image, mask)
+                    # Fix view_idxs format if present
+                    if 'view_idxs' in result and isinstance(result['view_idxs'], list) and len(result['view_idxs']) > 0:
+                        # Check if triple nested: [[[0,1,2,3]], [[0,1,2,3]]]
+                        first_item = result['view_idxs'][0]
+                        if isinstance(first_item, list) and len(first_item) > 0:
+                            if isinstance(first_item[0], list):
+                                # Triple nested, flatten to double nested: [[[0,1,2,3]]] -> [[0,1,2,3]]
+                                result['view_idxs'] = [item[0] if isinstance(item, list) and len(item) > 0 else item 
+                                                       for item in result['view_idxs']]
+                    return result
+                
+                # Temporarily replace prepare_image method
+                self.pipeline.prepare_image = fixed_prepare_image
+                
+                try:
+                    # Use semaphore to control concurrent batches
+                    if self.model_semaphore:
+                        async with self.model_semaphore:
+                            meshes = await loop.run_in_executor(
+                                None, 
+                                lambda: self.pipeline(**pipeline_params)
+                            )
+                    else:
                         meshes = await loop.run_in_executor(
                             None, 
                             lambda: self.pipeline(**pipeline_params)
                         )
-                else:
-                    meshes = await loop.run_in_executor(
-                        None, 
-                        lambda: self.pipeline(**pipeline_params)
-                    )
+                finally:
+                    # Restore original method
+                    self.pipeline.prepare_image = original_prepare_image
                 
                 logger.info(f"[Batch] GPU inference completed, got {len(meshes)} meshes")
                 
