@@ -240,9 +240,8 @@ class ModelWorker:
                 except Exception as e:
                     logger.warning(f"Failed to remove cache file {file_path}: {e}")
         
-        # Start batch processor loop
-        self.batch_processor_task = asyncio.create_task(self._batch_processor_loop())
-        logger.info(f"[Worker {self.worker_id}] Batch processor started")
+        # Batch processor will be started on first generate() call
+        self._batch_processor_started = False
     
     async def _batch_processor_loop(self):
         """Batch processor main loop: collect tasks and execute in batches"""
@@ -509,6 +508,13 @@ class ModelWorker:
         Returns:
             tuple: (file_path, uid) - Path to generated file and task ID
         """
+        # Start batch processor loop if not already started
+        # Note: This method is async, so we're guaranteed to have an event loop
+        if not self._batch_processor_started:
+            self.batch_processor_task = asyncio.create_task(self._batch_processor_loop())
+            self._batch_processor_started = True
+            logger.info(f"[Worker {self.worker_id}] Batch processor started")
+        
         # Create task and future
         future = asyncio.Future()
         task = BatchTask(
