@@ -9,6 +9,10 @@ HOST="0.0.0.0"
 DEVICE="cuda"
 CONCURRENCY=2  # 多视图模式建议降低并发数
 
+# 批处理参数
+BATCH_SIZE=2       # 批处理大小上限（同时处理的任务数），根据GPU内存调整
+BATCH_TIMEOUT=1.0  # 批处理超时时间（秒），等待多久后即使未满批次也开始处理
+
 # 多视图RGB LoRA权重路径（根据实际情况修改）
 # 优先级：Lightning checkpoint (.ckpt) > PEFT格式 (step_*)
 RGB_LORA_PATH=""
@@ -94,6 +98,8 @@ echo "模型: $MODEL_PATH / $SUBFOLDER"
 echo "端口: $PORT"
 echo "地址: http://$HOST:$PORT"
 echo "并发数: $CONCURRENCY"
+echo "批处理大小: $BATCH_SIZE (同时处理的任务数)"
+echo "批处理超时: ${BATCH_TIMEOUT}s (等待聚合时间)"
 echo "模式: 4视图RGB重建（不使用法线图或深度图）"
 echo "================================================"
 echo ""
@@ -117,4 +123,6 @@ python api_server.py \
     --port $PORT \
     --host "$HOST" \
     --device "$DEVICE" \
-    --limit-model-concurrency $CONCURRENCY
+    --limit-model-concurrency $CONCURRENCY \
+    --batch-size $BATCH_SIZE \
+    --batch-timeout $BATCH_TIMEOUT
