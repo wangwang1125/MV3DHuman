@@ -51,7 +51,7 @@ class GenerationRequest(BaseModel):
         5,
         description="Number of inference steps for generation",
         ge=1,
-        le=20
+        le=100
     )
     guidance_scale: float = Field(
         5.0,
