@@ -30,6 +30,7 @@ except Exception as e:
 from hy3dshape import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dshape.rembg import BackgroundRemover
 from hy3dshape.utils import logger
+from hy3dshape.pipelines import export_to_trimesh
 
 
 @dataclass
@@ -375,13 +376,14 @@ class ModelWorker:
             ref_params = batch_params_list[0]
             
             # Prepare batch pipeline parameters
+            # Use 'trimesh' output_type to get trimesh.Trimesh objects directly
             pipeline_params = {
                 'image': batch_images,  # Pass list, pipeline will auto-batch
                 'num_inference_steps': ref_params.get('num_inference_steps', 5),
                 'guidance_scale': ref_params.get('guidance_scale', 5.0),
                 'octree_resolution': ref_params.get('octree_resolution', 256),
                 'num_chunks': ref_params.get('num_chunks', 8000),
-                'output_type': 'mesh'
+                'output_type': 'trimesh'  # Changed from 'mesh' to 'trimesh' to get Trimesh objects
             }
             
             # Set seeds for each task (can be different)
@@ -439,7 +441,42 @@ class ModelWorker:
                     # Restore original method
                     self.pipeline.prepare_image = original_prepare_image
                 
-                logger.info(f"[Batch] GPU inference completed, got {len(meshes)} meshes")
+                logger.info(f"[Batch] GPU inference completed, got batch results")
+                
+                # Extract meshes from batch results
+                # Pipeline returns List[List[trimesh.Trimesh]] for batch
+                # Outer list is batch dimension, inner list is mesh list per sample
+                # For each batch element, we typically want the first mesh (index 0)
+                extracted_meshes = []
+                for i, batch_result in enumerate(meshes):
+                    if isinstance(batch_result, list):
+                        if len(batch_result) > 0:
+                            # Take first mesh from the list
+                            mesh = batch_result[0]
+                            if hasattr(mesh, 'export'):
+                                extracted_meshes.append(mesh)
+                            else:
+                                # Try to convert Latent2MeshOutput if needed
+                                converted = export_to_trimesh(mesh)
+                                if isinstance(converted, list) and len(converted) > 0:
+                                    extracted_meshes.append(converted[0])
+                                else:
+                                    extracted_meshes.append(converted)
+                        else:
+                            raise ValueError(f"Batch result {i} is an empty list")
+                    elif hasattr(batch_result, 'export'):
+                        # Already a Trimesh object (shouldn't happen with batch, but handle it)
+                        extracted_meshes.append(batch_result)
+                    else:
+                        # Try to convert Latent2MeshOutput if needed
+                        converted = export_to_trimesh(batch_result)
+                        if isinstance(converted, list) and len(converted) > 0:
+                            extracted_meshes.append(converted[0])
+                        else:
+                            extracted_meshes.append(converted)
+                
+                meshes = extracted_meshes
+                logger.info(f"[Batch] Extracted {len(meshes)} meshes from batch results")
                 
             except Exception as e:
                 logger.error(f"[Batch] GPU inference failed: {e}")
@@ -457,6 +494,16 @@ class ModelWorker:
                 uid = task.uid
                 
                 try:
+                    # Ensure mesh is a trimesh.Trimesh object with export method
+                    if mesh is None:
+                        raise ValueError(f"Mesh is None for task {uid}")
+                    
+                    if not hasattr(mesh, 'export'):
+                        # Try to convert if needed
+                        mesh = export_to_trimesh(mesh)
+                        if isinstance(mesh, list) and len(mesh) > 0:
+                            mesh = mesh[0]
+                    
                     # Export mesh
                     loop = asyncio.get_event_loop()
                     final_save_path = os.path.join(self.save_dir, f'{uid}.glb')
