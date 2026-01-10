@@ -176,30 +176,70 @@ class ModelWorker:
             await self.status_callback(uid, 'processing')
         
         try:
-            # Handle input image
-            if 'image' in params:
+            # Handle multi-view images (4 views: front, right, back, left)
+            if 'image_front' in params:
+                # Multi-view mode
+                image = {}
+                view_names = ['image_front', 'image_right', 'image_back', 'image_left']
+                
+                for view_name in view_names:
+                    if view_name in params and params[view_name]:
+                        # Load image from base64
+                        img = load_image_from_base64(params[view_name])
+                        # Convert to RGBA
+                        img = img.convert("RGBA")
+                        # Remove background if needed
+                        if params.get("remove_background", True) or img.mode == "RGB":
+                            loop = asyncio.get_event_loop()
+                            img = await loop.run_in_executor(None, self.rembg, img)
+                        
+                        # Store with simplified key (front, right, back, left)
+                        simple_name = view_name.replace('image_', '')
+                        image[simple_name] = img
+                        logger.info(f"Loaded view: {simple_name}")
+                
+                if not image:
+                    raise ValueError("No multi-view images provided")
+                    
+            elif 'image' in params:
+                # Single-view mode (for backward compatibility)
                 image = params["image"]
                 image = load_image_from_base64(image)
+                # Convert to RGBA and remove background if needed
+                image = image.convert("RGBA")
+                if params.get("remove_background", True) or image.mode == "RGB":
+                    # Run CPU-bound rembg in thread pool
+                    loop = asyncio.get_event_loop()
+                    image = await loop.run_in_executor(None, self.rembg, image)
             else:
                 raise ValueError("No input image provided")
-
-            # Convert to RGBA and remove background if needed
-            image = image.convert("RGBA")
-            if image.mode == "RGB":
-                # Run CPU-bound rembg in thread pool
-                loop = asyncio.get_event_loop()
-                image = await loop.run_in_executor(None, self.rembg, image)
 
             # Generate mesh (run in thread pool to avoid blocking)
             try:
                 loop = asyncio.get_event_loop()
                 
+                # Prepare pipeline parameters
+                pipeline_params = {
+                    'image': image,
+                    'num_inference_steps': params.get('num_inference_steps', 5),
+                    'guidance_scale': params.get('guidance_scale', 5.0),
+                    'octree_resolution': params.get('octree_resolution', 256),
+                    'num_chunks': params.get('num_chunks', 8000),
+                    'output_type': 'mesh'
+                }
+                
+                # Add seed if provided
+                if 'seed' in params:
+                    generator = torch.Generator()
+                    generator = generator.manual_seed(int(params['seed']))
+                    pipeline_params['generator'] = generator
+                
                 # Optional: use lock if thread safety issues occur
                 if self.use_pipeline_lock:
                     async with self.pipeline_lock:
-                        mesh = await loop.run_in_executor(None, lambda: self.pipeline(image=image)[0])
+                        mesh = await loop.run_in_executor(None, lambda: self.pipeline(**pipeline_params)[0])
                 else:
-                    mesh = await loop.run_in_executor(None, lambda: self.pipeline(image=image)[0])
+                    mesh = await loop.run_in_executor(None, lambda: self.pipeline(**pipeline_params)[0])
                 
                 logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
             except Exception as e:
@@ -220,11 +260,14 @@ class ModelWorker:
             try:
                 output_mesh_path_obj = os.path.join(self.save_dir, f'{str(uid)}_texturing.obj')
                 
+                # For texture generation, use front view or single image
+                texture_image = image.get('front', image) if isinstance(image, dict) else image
+                
                 # Run texture generation in thread pool
                 def run_texture_gen():
                     return self.paint_pipeline(
                         mesh_path=initial_save_path,
-                        image_path=image,
+                        image_path=texture_image,
                         output_mesh_path=output_mesh_path_obj,
                         save_glb=False            
                     )
