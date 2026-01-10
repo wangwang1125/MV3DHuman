@@ -67,12 +67,12 @@ def check_dataset_structure(dataset_path: str) -> Tuple[List[str], List[Dict]]:
             for i in range(4):
                 idx = f"{i:03d}"
                 png_file = render_cond_dir / f"{idx}.png"
-                depth_file = render_cond_dir / f"{idx}_depth.exr"
+                depth_file = render_cond_dir / f"{idx}_depth.png"
                 
                 if not png_file.exists():
                     missing_files.append(f"render_cond/{idx}.png")
                 if not depth_file.exists():
-                    missing_files.append(f"render_cond/{idx}_depth.exr")
+                    missing_files.append(f"render_cond/{idx}_depth.png")
             
             # 检查 mesh.ply
             mesh_file = render_cond_dir / "mesh.ply"
@@ -141,7 +141,7 @@ def print_results(valid_samples: List[str], invalid_samples: List[Dict]):
 
 def main():
     """主函数"""
-    dataset_path = "/mnt/g/mini_mv_depth_trainset/preprocessed/"
+    dataset_path = "/mnt/g/mini_mv_trainset/preprocessed/"
     
     print("🔍 数据集验证工具")
     print("=" * 80)
