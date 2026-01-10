@@ -21,7 +21,6 @@ import base64
 import logging
 import os
 import sys
-import threading
 import traceback
 import uuid
 from typing import Optional
@@ -54,6 +53,33 @@ logger = build_logger("controller", f"{SAVE_DIR}/controller.log")
 worker = None
 model_semaphore = None
 
+# Task status tracking dictionary
+# Structure: {uid: {'status': str, 'message': str, 'file_path': str}}
+task_status = {}
+
+
+async def update_task_status(uid, status, message=None, file_path=None):
+    """
+    Update task status in the global dictionary.
+    
+    Args:
+        uid: Task unique identifier
+        status: Status string (pending/processing/texturing/completed/error)
+        message: Optional message (for errors)
+        file_path: Optional file path (for completed tasks)
+    """
+    uid_str = str(uid)
+    if uid_str not in task_status:
+        task_status[uid_str] = {}
+    
+    task_status[uid_str]['status'] = status
+    if message:
+        task_status[uid_str]['message'] = message
+    if file_path:
+        task_status[uid_str]['file_path'] = file_path
+    
+    logger.info(f"Task {uid_str} status updated to: {status}")
+
 
 app = FastAPI(
     title=API_TITLE,
@@ -77,7 +103,7 @@ app.add_middleware(
 @app.post("/generate", tags=["generation"])
 async def generate_3d_model(request: GenerationRequest):
     """
-    Generate a 3D model from an input image.
+    Generate a 3D model from an input image (synchronous - waits for completion).
     
     This endpoint takes an image and generates a 3D model with optional textures.
     The generation process includes background removal, mesh generation, and optional texture mapping.
@@ -85,14 +111,14 @@ async def generate_3d_model(request: GenerationRequest):
     Returns:
         FileResponse: The generated 3D model file (GLB or OBJ format)
     """
-    logger.info("Worker generating...")
+    logger.info("Worker generating (synchronous)...")
     
     # Convert Pydantic model to dict for compatibility
     params = request.dict()
     
     uid = uuid.uuid4()
     try:
-        file_path, uid = worker.generate(uid, params)
+        file_path, uid = await worker.generate(uid, params)
         return FileResponse(file_path)
     except ValueError as e:
         traceback.print_exc()
@@ -130,18 +156,35 @@ async def send_generation_task(request: GenerationRequest):
     Returns:
         GenerationResponse: Contains the unique task identifier
     """
-    logger.info("Worker send...")
+    logger.info("Worker send (async task)...")
     
     # Convert Pydantic model to dict for compatibility
     params = request.dict()
     
     uid = uuid.uuid4()
+    uid_str = str(uid)
+    
     try:
-        threading.Thread(target=worker.generate, args=(uid, params,)).start()
-        ret = {"uid": str(uid)}
+        # Initialize task status as pending
+        await update_task_status(uid, 'pending')
+        
+        # Create async task instead of thread
+        async def run_generation():
+            try:
+                file_path, _ = await worker.generate(uid, params)
+                await update_task_status(uid, 'completed', file_path=file_path)
+            except Exception as e:
+                logger.error(f"Generation task {uid_str} failed: {e}")
+                await update_task_status(uid, 'error', message=str(e))
+        
+        # Start the task in background
+        asyncio.create_task(run_generation())
+        
+        ret = {"uid": uid_str}
         return JSONResponse(ret, status_code=200)
     except Exception as e:
-        logger.error(f"Failed to start generation thread: {e}")
+        logger.error(f"Failed to start generation task: {e}")
+        await update_task_status(uid, 'error', message=str(e))
         ret = {"error": "Failed to start generation"}
         return JSONResponse(ret, status_code=500)
 
@@ -168,48 +211,82 @@ async def status(uid: str):
     Returns:
         StatusResponse: Current status of the task and result if completed
     """
-    # Check for completion markers and output files
-    textured_file_path = os.path.join(SAVE_DIR, f'{uid}_textured.glb')
-    initial_file_path = os.path.join(SAVE_DIR, f'{uid}_initial.glb')
-    textured_complete_marker = os.path.join(SAVE_DIR, f'{uid}_textured_complete.txt')
-    initial_complete_marker = os.path.join(SAVE_DIR, f'{uid}_initial_complete.txt')
-    
-    # Check if generation is complete (with or without texture)
-    if os.path.exists(textured_complete_marker) and os.path.exists(textured_file_path):
-        # Textured version complete
-        try:
-            base64_str = base64.b64encode(open(textured_file_path, 'rb').read()).decode()
-            response = {'status': 'completed', 'model_base64': base64_str}
-            return JSONResponse(response, status_code=200)
-        except Exception as e:
-            logger.error(f"Error reading file {textured_file_path}: {e}")
-            response = {'status': 'error', 'message': 'Failed to read generated file'}
+    # Check in-memory task status first
+    if uid in task_status:
+        task_info = task_status[uid]
+        status_str = task_info.get('status', 'processing')
+        
+        if status_str == 'completed':
+            # Read and return the generated file
+            file_path = task_info.get('file_path')
+            if file_path and os.path.exists(file_path):
+                try:
+                    base64_str = base64.b64encode(open(file_path, 'rb').read()).decode()
+                    response = {'status': 'completed', 'model_base64': base64_str}
+                    return JSONResponse(response, status_code=200)
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {e}")
+                    response = {'status': 'error', 'message': 'Failed to read generated file'}
+                    return JSONResponse(response, status_code=500)
+            else:
+                # Fallback to file system check
+                textured_file_path = os.path.join(SAVE_DIR, f'{uid}_textured.glb')
+                initial_file_path = os.path.join(SAVE_DIR, f'{uid}_initial.glb')
+                
+                if os.path.exists(textured_file_path):
+                    try:
+                        base64_str = base64.b64encode(open(textured_file_path, 'rb').read()).decode()
+                        response = {'status': 'completed', 'model_base64': base64_str}
+                        return JSONResponse(response, status_code=200)
+                    except Exception as e:
+                        logger.error(f"Error reading file {textured_file_path}: {e}")
+                        response = {'status': 'error', 'message': 'Failed to read generated file'}
+                        return JSONResponse(response, status_code=500)
+                elif os.path.exists(initial_file_path):
+                    try:
+                        base64_str = base64.b64encode(open(initial_file_path, 'rb').read()).decode()
+                        response = {'status': 'completed', 'model_base64': base64_str}
+                        return JSONResponse(response, status_code=200)
+                    except Exception as e:
+                        logger.error(f"Error reading file {initial_file_path}: {e}")
+                        response = {'status': 'error', 'message': 'Failed to read generated file'}
+                        return JSONResponse(response, status_code=500)
+        
+        elif status_str == 'error':
+            message = task_info.get('message', 'Unknown error')
+            response = {'status': 'error', 'message': message}
             return JSONResponse(response, status_code=500)
-    
-    elif os.path.exists(initial_complete_marker) and os.path.exists(initial_file_path):
-        # Initial version complete (no texture requested or texture generation skipped)
-        try:
-            base64_str = base64.b64encode(open(initial_file_path, 'rb').read()).decode()
-            response = {'status': 'completed', 'model_base64': base64_str}
+        
+        else:
+            # pending, processing, or texturing
+            response = {'status': status_str}
             return JSONResponse(response, status_code=200)
-        except Exception as e:
-            logger.error(f"Error reading file {initial_file_path}: {e}")
-            response = {'status': 'error', 'message': 'Failed to read generated file'}
-            return JSONResponse(response, status_code=500)
     
-    # Check if initial file exists but no completion marker yet
-    elif os.path.exists(initial_file_path) and not os.path.exists(initial_complete_marker):
-        # Generation in progress, might be texturing
+    # Task not found in status dict, fallback to file system check
+    else:
+        textured_file_path = os.path.join(SAVE_DIR, f'{uid}_textured.glb')
+        initial_file_path = os.path.join(SAVE_DIR, f'{uid}_initial.glb')
+        
+        # If textured file exists, generation is complete
         if os.path.exists(textured_file_path):
+            try:
+                base64_str = base64.b64encode(open(textured_file_path, 'rb').read()).decode()
+                response = {'status': 'completed', 'model_base64': base64_str}
+                return JSONResponse(response, status_code=200)
+            except Exception as e:
+                logger.error(f"Error reading file {textured_file_path}: {e}")
+                response = {'status': 'error', 'message': 'Failed to read generated file'}
+                return JSONResponse(response, status_code=500)
+        
+        # If only initial file exists, texturing is in progress
+        elif os.path.exists(initial_file_path):
             response = {'status': 'texturing'}
+            return JSONResponse(response, status_code=200)
+        
+        # If no files exist, either processing or task doesn't exist
         else:
             response = {'status': 'processing'}
-        return JSONResponse(response, status_code=200)
-    
-    # No files exist yet, still processing
-    else:
-        response = {'status': 'processing'}
-        return JSONResponse(response, status_code=200)
+            return JSONResponse(response, status_code=200)
 
 
 if __name__ == "__main__":
@@ -279,13 +356,12 @@ if __name__ == "__main__":
     worker = ModelWorker(
         model_path=args.model_path, 
         subfolder=args.subfolder,
-        rgb_lora_path=args.rgb_lora_path if args.enable_multiview_rgb else None,
-        num_views=args.num_views,
         device=args.device, 
         low_vram_mode=args.low_vram_mode,
         worker_id=worker_id,
         model_semaphore=model_semaphore,
-        save_dir=SAVE_DIR
+        save_dir=SAVE_DIR,
+        status_callback=update_task_status
     )
     
     logger.info(f"Worker initialized successfully (worker_id: {worker_id})")
