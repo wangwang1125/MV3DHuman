@@ -361,7 +361,10 @@ if __name__ == "__main__":
         worker_id=worker_id,
         model_semaphore=model_semaphore,
         save_dir=SAVE_DIR,
-        status_callback=update_task_status
+        status_callback=update_task_status,
+        enable_multiview_rgb=args.enable_multiview_rgb,
+        rgb_lora_path=args.rgb_lora_path,
+        num_views=args.num_views
     )
     
     logger.info(f"Worker initialized successfully (worker_id: {worker_id})")

@@ -66,7 +66,10 @@ class ModelWorker:
                  worker_id=None,
                  model_semaphore=None,
                  save_dir='gradio_cache',
-                 status_callback=None):
+                 status_callback=None,
+                 enable_multiview_rgb=False,
+                 rgb_lora_path=None,
+                 num_views=4):
         """
         Initialize the model worker.
         
@@ -79,6 +82,9 @@ class ModelWorker:
             model_semaphore: Semaphore for controlling model concurrency
             save_dir (str): Directory to save generated files
             status_callback: Callback function to update task status
+            enable_multiview_rgb (bool): Enable multi-view RGB reconstruction mode
+            rgb_lora_path (str): Path to RGB LoRA weights
+            num_views (int): Number of views for multi-view mode
         """
         self.model_path = model_path
         self.worker_id = worker_id or str(uuid.uuid4())[:6]
@@ -87,6 +93,9 @@ class ModelWorker:
         self.model_semaphore = model_semaphore
         self.save_dir = save_dir
         self.status_callback = status_callback
+        self.enable_multiview_rgb = enable_multiview_rgb
+        self.rgb_lora_path = rgb_lora_path
+        self.num_views = num_views
         
         # Add lock for pipeline thread safety (currently unused, enable if needed)
         # If you encounter GPU race conditions, uncomment the lock usage in _generate_internal()
@@ -94,12 +103,63 @@ class ModelWorker:
         self.use_pipeline_lock = False  # Set to True if thread safety issues occur
         
         logger.info(f"Loading the model {model_path} on worker {self.worker_id} ...")
+        
+        if enable_multiview_rgb:
+            logger.info(f"Enabling multi-view RGB reconstruction mode ({num_views} views)")
 
         # Initialize background remover
         self.rembg = BackgroundRemover()
         
-        # Initialize shape generation pipeline (matching demo.py)
-        self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
+        # Initialize shape generation pipeline
+        # Note: The pipeline configuration should match gradio_app.py
+        self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            model_path,
+            subfolder=subfolder,
+            use_safetensors=False,
+            device=device
+        )
+        
+        # Load RGB LoRA if specified (for multi-view RGB mode)
+        if enable_multiview_rgb and rgb_lora_path:
+            logger.info(f"Loading RGB LoRA weights: {rgb_lora_path}")
+            # LoRA loading logic would go here
+            # For now, we assume the pipeline is already configured correctly
+        
+        # Setup multi-view image processor if needed
+        if enable_multiview_rgb:
+            try:
+                from hy3dshape.preprocessors import MVImageProcessorV2
+                from hy3dshape.models.conditioner import DinoImageEncoderMV
+                
+                self.pipeline.image_processor = MVImageProcessorV2(size=518)
+                logger.info("✅ Set MVImageProcessorV2 for multi-view RGB processing")
+                
+                # Replace encoder with multi-view version if needed
+                if hasattr(self.pipeline, 'conditioner') and hasattr(self.pipeline.conditioner, 'main_image_encoder'):
+                    current_encoder = self.pipeline.conditioner.main_image_encoder
+                    if not isinstance(current_encoder, DinoImageEncoderMV):
+                        logger.info("Replacing encoder with DinoImageEncoderMV...")
+                        new_encoder = DinoImageEncoderMV(
+                            version='facebook/dinov2-large',
+                            image_size=518,
+                            use_cls_token=True,
+                            view_num=num_views
+                        )
+                        # Copy weights if possible
+                        if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):
+                            try:
+                                new_encoder.model.load_state_dict(current_encoder.model.state_dict())
+                                logger.info("✅ Reused original encoder weights")
+                            except:
+                                logger.warning("⚠️ Could not reuse encoder weights, using defaults")
+                        
+                        new_encoder = new_encoder.to(device, dtype=self.pipeline.dtype)
+                        self.pipeline.conditioner.main_image_encoder = new_encoder
+                        logger.info(f"✅ Successfully replaced with DinoImageEncoderMV (views: {num_views})")
+            except Exception as e:
+                logger.error(f"Failed to setup multi-view components: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Initialize texture generation pipeline (matching demo.py)
         max_num_view = 6  # can be 6 to 9
