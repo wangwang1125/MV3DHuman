@@ -10,6 +10,9 @@ import trimesh
 from io import BytesIO
 from PIL import Image
 import torch
+from collections import deque
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
 
 # Apply torchvision compatibility fix before other imports
 import sys
@@ -27,17 +30,15 @@ except Exception as e:
 from hy3dshape import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dshape.rembg import BackgroundRemover
 from hy3dshape.utils import logger
-from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
-from hy3dpaint.convert_utils import create_glb_with_pbr_materials
 
 
-def quick_convert_with_obj2gltf(obj_path: str, glb_path: str):
-    textures = {
-        'albedo': obj_path.replace('.obj', '.jpg'),
-        'metallic': obj_path.replace('.obj', '_metallic.jpg'),
-        'roughness': obj_path.replace('.obj', '_roughness.jpg')
-        }
-    create_glb_with_pbr_materials(obj_path, textures, glb_path)
+@dataclass
+class BatchTask:
+    """Batch processing task data structure"""
+    uid: str
+    params: Dict[str, Any]
+    future: asyncio.Future
+    submit_time: float
 
 
 def load_image_from_base64(image):
@@ -69,7 +70,9 @@ class ModelWorker:
                  status_callback=None,
                  enable_multiview_rgb=False,
                  rgb_lora_path=None,
-                 num_views=4):
+                 num_views=4,
+                 batch_size=2,
+                 batch_timeout=1.0):
         """
         Initialize the model worker.
         
@@ -85,6 +88,8 @@ class ModelWorker:
             enable_multiview_rgb (bool): Enable multi-view RGB reconstruction mode
             rgb_lora_path (str): Path to RGB LoRA weights
             num_views (int): Number of views for multi-view mode
+            batch_size (int): Maximum batch size for parallel processing
+            batch_timeout (float): Timeout in seconds before processing incomplete batch
         """
         self.model_path = model_path
         self.worker_id = worker_id or str(uuid.uuid4())[:6]
@@ -97,12 +102,20 @@ class ModelWorker:
         self.rgb_lora_path = rgb_lora_path
         self.num_views = num_views
         
+        # Batch processing configuration
+        self.max_batch_size = batch_size
+        self.batch_timeout = batch_timeout
+        self.task_queue = deque()
+        self.queue_lock = asyncio.Lock()
+        self.batch_processor_task = None
+        
         # Add lock for pipeline thread safety (currently unused, enable if needed)
         # If you encounter GPU race conditions, uncomment the lock usage in _generate_internal()
         self.pipeline_lock = asyncio.Lock()
         self.use_pipeline_lock = False  # Set to True if thread safety issues occur
         
         logger.info(f"Loading the model {model_path} on worker {self.worker_id} ...")
+        logger.info(f"Batch processing enabled: batch_size={batch_size}, timeout={batch_timeout}s")
         
         if enable_multiview_rgb:
             logger.info(f"Enabling multi-view RGB reconstruction mode ({num_views} views)")
@@ -127,12 +140,17 @@ class ModelWorker:
         
         # Setup multi-view image processor if needed
         if enable_multiview_rgb:
+            logger.info("=" * 60)
+            logger.info("CONFIGURING MULTI-VIEW RGB MODE")
+            logger.info("=" * 60)
             try:
                 from hy3dshape.preprocessors import MVImageProcessorV2
                 from hy3dshape.models.conditioner import DinoImageEncoderMV
                 
+                # Set multi-view image processor
+                logger.info(f"Setting MVImageProcessorV2 (size=518)...")
                 self.pipeline.image_processor = MVImageProcessorV2(size=518)
-                logger.info("✅ Set MVImageProcessorV2 for multi-view RGB processing")
+                logger.info(f"✅ Image processor type: {type(self.pipeline.image_processor).__name__}")
                 
                 # Get pipeline dtype
                 pipeline_dtype = getattr(self.pipeline, 'dtype', torch.float16)
@@ -141,46 +159,319 @@ class ModelWorker:
                     if hasattr(self.pipeline, 'model') and hasattr(self.pipeline.model, 'dtype'):
                         pipeline_dtype = self.pipeline.model.dtype
                     logger.info(f"Inferred pipeline dtype: {pipeline_dtype}")
+                else:
+                    logger.info(f"Pipeline dtype: {pipeline_dtype}")
                 
-                # Replace encoder with multi-view version if needed
-                if hasattr(self.pipeline, 'conditioner') and hasattr(self.pipeline.conditioner, 'main_image_encoder'):
-                    current_encoder = self.pipeline.conditioner.main_image_encoder
-                    if not isinstance(current_encoder, DinoImageEncoderMV):
-                        logger.info("Replacing encoder with DinoImageEncoderMV...")
-                        new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
-                            image_size=518,
-                            use_cls_token=True,
-                            view_num=num_views
-                        )
-                        # Copy weights if possible
-                        if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):
-                            try:
-                                new_encoder.model.load_state_dict(current_encoder.model.state_dict())
-                                logger.info("✅ Reused original encoder weights")
-                            except Exception as copy_error:
-                                logger.warning(f"⚠️ Could not reuse encoder weights: {copy_error}, using defaults")
-                        
-                        new_encoder = new_encoder.to(device, dtype=pipeline_dtype)
-                        self.pipeline.conditioner.main_image_encoder = new_encoder
-                        logger.info(f"✅ Successfully replaced with DinoImageEncoderMV (views: {num_views})")
+                # Check conditioner structure
+                if not hasattr(self.pipeline, 'conditioner'):
+                    raise RuntimeError("Pipeline does not have 'conditioner' attribute")
+                
+                if not hasattr(self.pipeline.conditioner, 'main_image_encoder'):
+                    raise RuntimeError("Conditioner does not have 'main_image_encoder' attribute")
+                
+                current_encoder = self.pipeline.conditioner.main_image_encoder
+                logger.info(f"Current encoder type: {type(current_encoder).__name__}")
+                logger.info(f"Current encoder class: {current_encoder.__class__.__module__}.{current_encoder.__class__.__name__}")
+                
+                # Check if already DinoImageEncoderMV
+                if isinstance(current_encoder, DinoImageEncoderMV):
+                    logger.info(f"✅ Encoder is already DinoImageEncoderMV with view_num={current_encoder.view_num}")
+                    if current_encoder.view_num != num_views:
+                        logger.warning(f"⚠️ Encoder view_num ({current_encoder.view_num}) != requested num_views ({num_views})")
+                else:
+                    # Replace encoder with multi-view version
+                    logger.info(f"Replacing {type(current_encoder).__name__} with DinoImageEncoderMV...")
+                    logger.info(f"  Creating DinoImageEncoderMV:")
+                    logger.info(f"    - version: facebook/dinov2-large")
+                    logger.info(f"    - image_size: 518")
+                    logger.info(f"    - use_cls_token: True")
+                    logger.info(f"    - view_num: {num_views}")
+                    
+                    new_encoder = DinoImageEncoderMV(
+                        version='facebook/dinov2-large',
+                        image_size=518,
+                        use_cls_token=True,
+                        view_num=num_views
+                    )
+                    
+                    # Copy weights if possible
+                    if hasattr(current_encoder, 'model') and hasattr(new_encoder, 'model'):
+                        try:
+                            logger.info("  Attempting to copy encoder weights...")
+                            new_encoder.model.load_state_dict(current_encoder.model.state_dict())
+                            logger.info("  ✅ Successfully copied encoder weights")
+                        except Exception as copy_error:
+                            logger.warning(f"  ⚠️ Could not copy encoder weights: {copy_error}")
+                            logger.warning("  Will use default DinoV2 weights")
+                    
+                    # Move to device
+                    logger.info(f"  Moving encoder to {device} with dtype {pipeline_dtype}...")
+                    new_encoder = new_encoder.to(device, dtype=pipeline_dtype)
+                    
+                    # Replace encoder
+                    self.pipeline.conditioner.main_image_encoder = new_encoder
+                    logger.info(f"  ✅ Encoder replaced")
+                    
+                    # Verify replacement
+                    verify_encoder = self.pipeline.conditioner.main_image_encoder
+                    logger.info(f"  Verification - Encoder type: {type(verify_encoder).__name__}")
+                    logger.info(f"  Verification - view_num: {getattr(verify_encoder, 'view_num', 'N/A')}")
+                
+                logger.info("=" * 60)
+                logger.info("✅ MULTI-VIEW RGB MODE CONFIGURED")
+                logger.info("=" * 60)
+                
             except Exception as e:
-                logger.error(f"Failed to setup multi-view components: {e}")
+                logger.error("=" * 60)
+                logger.error(f"❌ FAILED TO SETUP MULTI-VIEW COMPONENTS")
+                logger.error("=" * 60)
+                logger.error(f"Error: {e}")
                 import traceback
                 traceback.print_exc()
+                logger.error("=" * 60)
                 raise RuntimeError(f"Multi-view RGB mode setup failed: {e}")
         
-        # Initialize texture generation pipeline (matching demo.py)
-        max_num_view = 6  # can be 6 to 9
-        resolution = 512  # can be 768 or 512
-        conf = Hunyuan3DPaintConfig(max_num_view, resolution)
-        conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
-        conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-        conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
-        self.paint_pipeline = Hunyuan3DPaintPipeline(conf)
-        # clean cache in save_dir
-        for file in os.listdir(self.save_dir):
-            os.remove(os.path.join(self.save_dir, file))
+        # Clean cache in save_dir
+        if os.path.exists(self.save_dir):
+            for file in os.listdir(self.save_dir):
+                file_path = os.path.join(self.save_dir, file)
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to remove cache file {file_path}: {e}")
+        
+        # Start batch processor loop
+        self.batch_processor_task = asyncio.create_task(self._batch_processor_loop())
+        logger.info(f"[Worker {self.worker_id}] Batch processor started")
+    
+    async def _batch_processor_loop(self):
+        """Batch processor main loop: collect tasks and execute in batches"""
+        logger.info(f"[Worker {self.worker_id}] Batch processor loop started")
+        
+        while True:
+            try:
+                await asyncio.sleep(0.01)  # Avoid CPU 100%
+                
+                async with self.queue_lock:
+                    if len(self.task_queue) == 0:
+                        continue
+                    
+                    # Check if we should start batch processing
+                    should_process = False
+                    reason = ""
+                    
+                    # Condition 1: Queue is full
+                    if len(self.task_queue) >= self.max_batch_size:
+                        should_process = True
+                        reason = f"batch full ({len(self.task_queue)})"
+                    
+                    # Condition 2: Timeout (oldest task waiting time exceeds timeout)
+                    elif len(self.task_queue) > 0:
+                        oldest_task = self.task_queue[0]
+                        wait_time = time.time() - oldest_task.submit_time
+                        if wait_time >= self.batch_timeout:
+                            should_process = True
+                            reason = f"timeout ({wait_time:.2f}s)"
+                    
+                    if not should_process:
+                        continue
+                    
+                    # Extract a batch of tasks
+                    batch_tasks = []
+                    for _ in range(min(self.max_batch_size, len(self.task_queue))):
+                        batch_tasks.append(self.task_queue.popleft())
+                
+                # Process batch outside of lock
+                logger.info(f"[Worker {self.worker_id}] Processing batch of {len(batch_tasks)} tasks (reason: {reason})")
+                await self._process_batch(batch_tasks)
+                
+            except Exception as e:
+                logger.error(f"[Worker {self.worker_id}] Batch processor error: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    async def _process_batch(self, batch_tasks):
+        """Process multiple tasks in a batch"""
+        if not batch_tasks:
+            return
+        
+        batch_size = len(batch_tasks)
+        logger.info(f"[Batch] Processing {batch_size} tasks: {[t.uid for t in batch_tasks]}")
+        
+        try:
+            # Stage 1: Parallel preprocessing (background removal) for all tasks
+            async def preprocess_task(task):
+                """Preprocess a single task's images"""
+                params = task.params
+                
+                # Update status
+                if self.status_callback:
+                    await self.status_callback(task.uid, 'processing')
+                
+                # Multi-view mode
+                if 'image_front' in params:
+                    image = {}
+                    view_names = ['image_front', 'image_right', 'image_back', 'image_left']
+                    
+                    for view_name in view_names:
+                        if view_name in params and params[view_name]:
+                            img = load_image_from_base64(params[view_name])
+                            img = img.convert("RGBA")
+                            if params.get("remove_background", True) or img.mode == "RGB":
+                                loop = asyncio.get_event_loop()
+                                img = await loop.run_in_executor(None, self.rembg, img)
+                            simple_name = view_name.replace('image_', '')
+                            image[simple_name] = img
+                    
+                    if not image:
+                        raise ValueError("No multi-view images provided")
+                    return task.uid, image, params
+                
+                # Single-view mode
+                elif 'image' in params:
+                    image = params["image"]
+                    image = load_image_from_base64(image)
+                    image = image.convert("RGBA")
+                    if params.get("remove_background", True) or image.mode == "RGB":
+                        loop = asyncio.get_event_loop()
+                        image = await loop.run_in_executor(None, self.rembg, image)
+                    return task.uid, image, params
+                
+                else:
+                    raise ValueError("No input image provided")
+            
+            # Parallel preprocessing of all tasks
+            preprocessed = await asyncio.gather(
+                *[preprocess_task(task) for task in batch_tasks],
+                return_exceptions=True
+            )
+            
+            # Check preprocessing errors
+            valid_tasks = []
+            for i, result in enumerate(preprocessed):
+                if isinstance(result, Exception):
+                    logger.error(f"[Batch] Task {batch_tasks[i].uid} preprocessing failed: {result}")
+                    batch_tasks[i].future.set_exception(result)
+                    if self.status_callback:
+                        await self.status_callback(batch_tasks[i].uid, 'error', str(result))
+                else:
+                    valid_tasks.append((batch_tasks[i], result))
+            
+            if not valid_tasks:
+                logger.warning("[Batch] No valid tasks after preprocessing")
+                return
+            
+            # Stage 2: Batch GPU inference
+            logger.info(f"[Batch] Starting GPU inference for {len(valid_tasks)} tasks")
+            
+            # Build batch inputs
+            batch_images = []
+            batch_params_list = []
+            
+            for task, (uid, image, params) in valid_tasks:
+                batch_images.append(image)
+                batch_params_list.append(params)
+            
+            # Use first task's parameters as batch parameters
+            ref_params = batch_params_list[0]
+            
+            # Prepare batch pipeline parameters
+            pipeline_params = {
+                'image': batch_images,  # Pass list, pipeline will auto-batch
+                'num_inference_steps': ref_params.get('num_inference_steps', 5),
+                'guidance_scale': ref_params.get('guidance_scale', 5.0),
+                'octree_resolution': ref_params.get('octree_resolution', 256),
+                'num_chunks': ref_params.get('num_chunks', 8000),
+                'output_type': 'mesh'
+            }
+            
+            # Set seeds for each task (can be different)
+            generators = []
+            for params in batch_params_list:
+                if 'seed' in params:
+                    generator = torch.Generator()
+                    generator = generator.manual_seed(int(params['seed']))
+                    generators.append(generator)
+                else:
+                    generators.append(None)
+            
+            if all(g is not None for g in generators):
+                pipeline_params['generator'] = generators
+            
+            # Execute batch inference
+            try:
+                loop = asyncio.get_event_loop()
+                
+                # Use semaphore to control concurrent batches
+                if self.model_semaphore:
+                    async with self.model_semaphore:
+                        meshes = await loop.run_in_executor(
+                            None, 
+                            lambda: self.pipeline(**pipeline_params)
+                        )
+                else:
+                    meshes = await loop.run_in_executor(
+                        None, 
+                        lambda: self.pipeline(**pipeline_params)
+                    )
+                
+                logger.info(f"[Batch] GPU inference completed, got {len(meshes)} meshes")
+                
+            except Exception as e:
+                logger.error(f"[Batch] GPU inference failed: {e}")
+                import traceback
+                traceback.print_exc()
+                for task, _ in valid_tasks:
+                    task.future.set_exception(e)
+                    if self.status_callback:
+                        await self.status_callback(task.uid, 'error', str(e))
+                return
+            
+            # Stage 3: Parallel post-processing (export mesh)
+            async def postprocess_task(task, mesh):
+                """Post-process a single task"""
+                uid = task.uid
+                
+                try:
+                    # Export mesh
+                    loop = asyncio.get_event_loop()
+                    final_save_path = os.path.join(self.save_dir, f'{uid}.glb')
+                    await loop.run_in_executor(None, mesh.export, final_save_path)
+                    
+                    # Update status
+                    if self.status_callback:
+                        await self.status_callback(uid, 'completed', file_path=final_save_path)
+                    
+                    # Return result
+                    task.future.set_result((final_save_path, uid))
+                    logger.info(f"[Task {uid}] Completed")
+                    
+                except Exception as e:
+                    logger.error(f"[Task {uid}] Post-processing failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    task.future.set_exception(e)
+                    if self.status_callback:
+                        await self.status_callback(uid, 'error', str(e))
+            
+            # Parallel post-processing of all tasks
+            await asyncio.gather(*[
+                postprocess_task(task, meshes[i])
+                for i, (task, _) in enumerate(valid_tasks)
+            ])
+            
+            if self.low_vram_mode:
+                torch.cuda.empty_cache()
+            
+            logger.info(f"[Batch] All {len(valid_tasks)} tasks completed")
+            
+        except Exception as e:
+            logger.error(f"[Batch] Batch processing failed: {e}")
+            import traceback
+            traceback.print_exc()
+            for task in batch_tasks:
+                if not task.future.done():
+                    task.future.set_exception(e)
             
     def get_queue_length(self):
         """
@@ -207,10 +498,9 @@ class ModelWorker:
             "queue_length": self.get_queue_length(),
         }
 
-    @torch.inference_mode()
     async def generate(self, uid, params):
         """
-        Generate a 3D model from the given parameters (async version).
+        Submit a generation task to the batch processing queue.
         
         Args:
             uid: Unique identifier for this generation task
@@ -219,166 +509,28 @@ class ModelWorker:
         Returns:
             tuple: (file_path, uid) - Path to generated file and task ID
         """
-        # Acquire semaphore to control concurrency
-        if self.model_semaphore:
-            async with self.model_semaphore:
-                return await self._generate_internal(uid, params)
-        else:
-            return await self._generate_internal(uid, params)
-    
-    async def _generate_internal(self, uid, params):
-        """
-        Internal generation method that does the actual work.
+        # Create task and future
+        future = asyncio.Future()
+        task = BatchTask(
+            uid=str(uid),
+            params=params,
+            future=future,
+            submit_time=time.time()
+        )
         
-        Args:
-            uid: Unique identifier for this generation task
-            params (dict): Generation parameters including image and options
-            
-        Returns:
-            tuple: (file_path, uid) - Path to generated file and task ID
-        """
-        start_time = time.time()
-        logger.info(f"Generating 3D model for uid: {uid}")
+        # Add to queue
+        async with self.queue_lock:
+            self.task_queue.append(task)
+            logger.info(f"[Task {uid}] Added to queue (queue length: {len(self.task_queue)})")
         
-        # Update status to processing
+        # Initialize status
         if self.status_callback:
-            await self.status_callback(uid, 'processing')
+            await self.status_callback(uid, 'pending')
         
+        # Wait for result
         try:
-            # Handle multi-view images (4 views: front, right, back, left)
-            if 'image_front' in params:
-                # Multi-view mode
-                image = {}
-                view_names = ['image_front', 'image_right', 'image_back', 'image_left']
-                
-                for view_name in view_names:
-                    if view_name in params and params[view_name]:
-                        # Load image from base64
-                        img = load_image_from_base64(params[view_name])
-                        # Convert to RGBA
-                        img = img.convert("RGBA")
-                        # Remove background if needed
-                        if params.get("remove_background", True) or img.mode == "RGB":
-                            loop = asyncio.get_event_loop()
-                            img = await loop.run_in_executor(None, self.rembg, img)
-                        
-                        # Store with simplified key (front, right, back, left)
-                        simple_name = view_name.replace('image_', '')
-                        image[simple_name] = img
-                        logger.info(f"Loaded view: {simple_name}")
-                
-                if not image:
-                    raise ValueError("No multi-view images provided")
-                    
-            elif 'image' in params:
-                # Single-view mode (for backward compatibility)
-                image = params["image"]
-                image = load_image_from_base64(image)
-                # Convert to RGBA and remove background if needed
-                image = image.convert("RGBA")
-                if params.get("remove_background", True) or image.mode == "RGB":
-                    # Run CPU-bound rembg in thread pool
-                    loop = asyncio.get_event_loop()
-                    image = await loop.run_in_executor(None, self.rembg, image)
-            else:
-                raise ValueError("No input image provided")
-
-            # Generate mesh (run in thread pool to avoid blocking)
-            try:
-                loop = asyncio.get_event_loop()
-                
-                # Prepare pipeline parameters
-                pipeline_params = {
-                    'image': image,
-                    'num_inference_steps': params.get('num_inference_steps', 5),
-                    'guidance_scale': params.get('guidance_scale', 5.0),
-                    'octree_resolution': params.get('octree_resolution', 256),
-                    'num_chunks': params.get('num_chunks', 8000),
-                    'output_type': 'mesh'
-                }
-                
-                # Add seed if provided
-                if 'seed' in params:
-                    generator = torch.Generator()
-                    generator = generator.manual_seed(int(params['seed']))
-                    pipeline_params['generator'] = generator
-                
-                # Optional: use lock if thread safety issues occur
-                if self.use_pipeline_lock:
-                    async with self.pipeline_lock:
-                        mesh = await loop.run_in_executor(None, lambda: self.pipeline(**pipeline_params)[0])
-                else:
-                    mesh = await loop.run_in_executor(None, lambda: self.pipeline(**pipeline_params)[0])
-                
-                logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
-            except Exception as e:
-                logger.error(f"Shape generation failed: {e}")
-                if self.status_callback:
-                    await self.status_callback(uid, 'error', str(e))
-                raise ValueError(f"Failed to generate 3D mesh: {str(e)}")
-
-            # Export initial mesh without texture
-            initial_save_path = os.path.join(self.save_dir, f'{str(uid)}_initial.glb')
-            await loop.run_in_executor(None, mesh.export, initial_save_path)
-            
-            # Update status to texturing
-            if self.status_callback:
-                await self.status_callback(uid, 'texturing')
-            
-            # Generate textured mesh as obj ( as in demo )
-            try:
-                output_mesh_path_obj = os.path.join(self.save_dir, f'{str(uid)}_texturing.obj')
-                
-                # For texture generation, use front view or single image
-                texture_image = image.get('front', image) if isinstance(image, dict) else image
-                
-                # Run texture generation in thread pool
-                def run_texture_gen():
-                    return self.paint_pipeline(
-                        mesh_path=initial_save_path,
-                        image_path=texture_image,
-                        output_mesh_path=output_mesh_path_obj,
-                        save_glb=False            
-                    )
-                
-                # Optional: use lock if thread safety issues occur
-                if self.use_pipeline_lock:
-                    async with self.pipeline_lock:
-                        textured_path_obj = await loop.run_in_executor(None, run_texture_gen)
-                else:
-                    textured_path_obj = await loop.run_in_executor(None, run_texture_gen)
-                logger.info("---Texture generation takes %s seconds ---" % (time.time() - start_time))
-                logger.info(f"output_mesh_path: {output_mesh_path_obj} textured_path: {textured_path_obj}")
-
-                # Convert textured OBJ to GLB using obj2gltf with PBR support
-                logger.info("convert textured OBJ to GLB")
-                glb_path_textured = os.path.join(self.save_dir, f'{str(uid)}_texturing.glb')
-                await loop.run_in_executor(None, quick_convert_with_obj2gltf, textured_path_obj, glb_path_textured)
-                
-                # Rename to final path
-                logger.info("done.")
-                final_save_path = os.path.join(self.save_dir, f'{str(uid)}_textured.glb')
-                await loop.run_in_executor(None, os.rename, glb_path_textured, final_save_path)
-                logger.info(f"final_save_path: {final_save_path}")
-
-            except Exception as e:
-                logger.error(f"Texture generation failed: {e}")
-                # Fall back to untextured mesh if texture generation fails
-                final_save_path = initial_save_path
-                logger.warning(f"Using untextured mesh as fallback: {final_save_path}")
-
-            if self.low_vram_mode:
-                torch.cuda.empty_cache()
-            
-            # Update status to completed
-            if self.status_callback:
-                await self.status_callback(uid, 'completed')
-                
-            logger.info("---Total generation takes %s seconds ---" % (time.time() - start_time))
-            return final_save_path, uid
-            
+            result = await future
+            return result
         except Exception as e:
-            logger.error(f"Generation failed for uid {uid}: {e}")
-            if self.status_callback:
-                await self.status_callback(uid, 'error', str(e))
-            raise 
+            logger.error(f"[Task {uid}] Failed: {e}")
+            raise

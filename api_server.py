@@ -230,25 +230,15 @@ async def status(uid: str):
                     return JSONResponse(response, status_code=500)
             else:
                 # Fallback to file system check
-                textured_file_path = os.path.join(SAVE_DIR, f'{uid}_textured.glb')
-                initial_file_path = os.path.join(SAVE_DIR, f'{uid}_initial.glb')
+                mesh_file_path = os.path.join(SAVE_DIR, f'{uid}.glb')
                 
-                if os.path.exists(textured_file_path):
+                if os.path.exists(mesh_file_path):
                     try:
-                        base64_str = base64.b64encode(open(textured_file_path, 'rb').read()).decode()
+                        base64_str = base64.b64encode(open(mesh_file_path, 'rb').read()).decode()
                         response = {'status': 'completed', 'model_base64': base64_str}
                         return JSONResponse(response, status_code=200)
                     except Exception as e:
-                        logger.error(f"Error reading file {textured_file_path}: {e}")
-                        response = {'status': 'error', 'message': 'Failed to read generated file'}
-                        return JSONResponse(response, status_code=500)
-                elif os.path.exists(initial_file_path):
-                    try:
-                        base64_str = base64.b64encode(open(initial_file_path, 'rb').read()).decode()
-                        response = {'status': 'completed', 'model_base64': base64_str}
-                        return JSONResponse(response, status_code=200)
-                    except Exception as e:
-                        logger.error(f"Error reading file {initial_file_path}: {e}")
+                        logger.error(f"Error reading file {mesh_file_path}: {e}")
                         response = {'status': 'error', 'message': 'Failed to read generated file'}
                         return JSONResponse(response, status_code=500)
         
@@ -258,32 +248,26 @@ async def status(uid: str):
             return JSONResponse(response, status_code=500)
         
         else:
-            # pending, processing, or texturing
+            # pending or processing
             response = {'status': status_str}
             return JSONResponse(response, status_code=200)
     
     # Task not found in status dict, fallback to file system check
     else:
-        textured_file_path = os.path.join(SAVE_DIR, f'{uid}_textured.glb')
-        initial_file_path = os.path.join(SAVE_DIR, f'{uid}_initial.glb')
+        mesh_file_path = os.path.join(SAVE_DIR, f'{uid}.glb')
         
-        # If textured file exists, generation is complete
-        if os.path.exists(textured_file_path):
+        # If mesh file exists, generation is complete
+        if os.path.exists(mesh_file_path):
             try:
-                base64_str = base64.b64encode(open(textured_file_path, 'rb').read()).decode()
+                base64_str = base64.b64encode(open(mesh_file_path, 'rb').read()).decode()
                 response = {'status': 'completed', 'model_base64': base64_str}
                 return JSONResponse(response, status_code=200)
             except Exception as e:
-                logger.error(f"Error reading file {textured_file_path}: {e}")
+                logger.error(f"Error reading file {mesh_file_path}: {e}")
                 response = {'status': 'error', 'message': 'Failed to read generated file'}
                 return JSONResponse(response, status_code=500)
         
-        # If only initial file exists, texturing is in progress
-        elif os.path.exists(initial_file_path):
-            response = {'status': 'texturing'}
-            return JSONResponse(response, status_code=200)
-        
-        # If no files exist, either processing or task doesn't exist
+        # If no file exists, either processing or task doesn't exist
         else:
             response = {'status': 'processing'}
             return JSONResponse(response, status_code=200)
@@ -306,6 +290,10 @@ if __name__ == "__main__":
                         help='Path to RGB LoRA checkpoint (Lightning .ckpt or PEFT directory)')
     parser.add_argument('--num_views', type=int, default=4,
                         help='Number of views for multi-view reconstruction (fixed to 4)')
+    parser.add_argument('--batch-size', type=int, default=2,
+                        help='Batch size for parallel processing (default: 2)')
+    parser.add_argument('--batch-timeout', type=float, default=1.0,
+                        help='Batch timeout in seconds (default: 1.0)')
     args = parser.parse_args()
     logger.info(f"args: {args}")
     
@@ -351,7 +339,9 @@ if __name__ == "__main__":
     os.makedirs(SAVE_DIR, exist_ok=True)
     
 
-    model_semaphore = asyncio.Semaphore(args.limit_model_concurrency)
+    # Use semaphore of 1 to ensure only one batch is processed at a time
+    # Batching is handled internally by the worker
+    model_semaphore = asyncio.Semaphore(1)
 
     worker = ModelWorker(
         model_path=args.model_path, 
@@ -364,7 +354,9 @@ if __name__ == "__main__":
         status_callback=update_task_status,
         enable_multiview_rgb=args.enable_multiview_rgb,
         rgb_lora_path=args.rgb_lora_path,
-        num_views=args.num_views
+        num_views=args.num_views,
+        batch_size=args.batch_size,
+        batch_timeout=args.batch_timeout
     )
     
     logger.info(f"Worker initialized successfully (worker_id: {worker_id})")
