@@ -441,4 +441,11 @@ class ModelWorker:
             torch.cuda.empty_cache()
             
         logger.info("---Total generation takes %s seconds ---" % (time.time() - start_time))
+        
+        # Create completion marker file to help status endpoint
+        # This indicates the generation is truly complete
+        completion_marker = final_save_path.replace('.glb', '_complete.txt')
+        with open(completion_marker, 'w') as f:
+            f.write(f"completed at {time.time()}")
+        
         return final_save_path, uid 
