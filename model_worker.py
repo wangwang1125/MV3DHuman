@@ -134,6 +134,14 @@ class ModelWorker:
                 self.pipeline.image_processor = MVImageProcessorV2(size=518)
                 logger.info("✅ Set MVImageProcessorV2 for multi-view RGB processing")
                 
+                # Get pipeline dtype
+                pipeline_dtype = getattr(self.pipeline, 'dtype', torch.float16)
+                if not hasattr(self.pipeline, 'dtype'):
+                    # Try to infer from model
+                    if hasattr(self.pipeline, 'model') and hasattr(self.pipeline.model, 'dtype'):
+                        pipeline_dtype = self.pipeline.model.dtype
+                    logger.info(f"Inferred pipeline dtype: {pipeline_dtype}")
+                
                 # Replace encoder with multi-view version if needed
                 if hasattr(self.pipeline, 'conditioner') and hasattr(self.pipeline.conditioner, 'main_image_encoder'):
                     current_encoder = self.pipeline.conditioner.main_image_encoder
@@ -150,16 +158,17 @@ class ModelWorker:
                             try:
                                 new_encoder.model.load_state_dict(current_encoder.model.state_dict())
                                 logger.info("✅ Reused original encoder weights")
-                            except:
-                                logger.warning("⚠️ Could not reuse encoder weights, using defaults")
+                            except Exception as copy_error:
+                                logger.warning(f"⚠️ Could not reuse encoder weights: {copy_error}, using defaults")
                         
-                        new_encoder = new_encoder.to(device, dtype=self.pipeline.dtype)
+                        new_encoder = new_encoder.to(device, dtype=pipeline_dtype)
                         self.pipeline.conditioner.main_image_encoder = new_encoder
                         logger.info(f"✅ Successfully replaced with DinoImageEncoderMV (views: {num_views})")
             except Exception as e:
                 logger.error(f"Failed to setup multi-view components: {e}")
                 import traceback
                 traceback.print_exc()
+                raise RuntimeError(f"Multi-view RGB mode setup failed: {e}")
         
         # Initialize texture generation pipeline (matching demo.py)
         max_num_view = 6  # can be 6 to 9
