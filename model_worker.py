@@ -379,8 +379,13 @@ class ModelWorker:
                 output_type='mesh'
             )
             
-            mesh = mesh_outputs[0]
             logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
+            
+            # Extract mesh from output (handle Latent2MeshOutput object)
+            from hy3dshape.pipelines import export_to_trimesh
+            mesh = export_to_trimesh(mesh_outputs)[0]
+            logger.info(f"Mesh extracted: {mesh.vertices.shape[0]} vertices, {mesh.faces.shape[0]} faces")
+            
         except Exception as e:
             logger.error(f"Multi-view shape generation failed: {e}")
             import traceback
@@ -388,41 +393,49 @@ class ModelWorker:
             raise ValueError(f"Failed to generate 3D mesh from multi-view images: {str(e)}")
 
         # Export initial mesh without texture
-        
         initial_save_path = os.path.join(self.save_dir, f'{str(uid)}_initial.glb')
         mesh.export(initial_save_path)
+        logger.info(f"Initial mesh exported to: {initial_save_path}")
         
-        # Generate textured mesh as obj ( as in demo )
-        try:
-            output_mesh_path_obj = os.path.join(self.save_dir, f'{str(uid)}_texturing.obj')
-            textured_path_obj = self.paint_pipeline(
-                mesh_path=initial_save_path,
-                image_path=image,
-                output_mesh_path=output_mesh_path_obj,
-                save_glb=False            
-            )
-            logger.info("---Texture generation takes %s seconds ---" % (time.time() - start_time))
-            logger.info(f"output_mesh_path: {output_mesh_path_obj} textured_path: {textured_path_obj}")
-            # Use the textured GLB as the final output
-            #final_save_path = os.path.join(self.save_dir, f'{str(uid)}_textured.{file_type}')
-            #os.rename(output_mesh_path, final_save_path)
+        # Generate textured mesh if requested
+        if params.get('texture', False):
+            try:
+                logger.info("Starting texture generation...")
+                output_mesh_path_obj = os.path.join(self.save_dir, f'{str(uid)}_texturing.obj')
+                
+                # Use front view image for texture generation
+                front_image = images['front']
+                
+                textured_path_obj = self.paint_pipeline(
+                    mesh_path=initial_save_path,
+                    image_path=front_image,
+                    output_mesh_path=output_mesh_path_obj,
+                    save_glb=False            
+                )
+                logger.info("---Texture generation takes %s seconds ---" % (time.time() - start_time))
+                logger.info(f"output_mesh_path: {output_mesh_path_obj} textured_path: {textured_path_obj}")
 
-            # Convert textured OBJ to GLB using obj2gltf with PBR support
-            print("convert textured OBJ to GLB")
-            glb_path_textured = os.path.join(self.save_dir, f'{str(uid)}_texturing.glb')
-            quick_convert_with_obj2gltf(textured_path_obj, glb_path_textured)
-            # now rename glb_path to uid_textured.glb
-            print("done.")
-            final_save_path = os.path.join(self.save_dir, f'{str(uid)}_textured.glb')
-            os.rename(glb_path_textured, final_save_path)
-            print(f"final_save_path: {final_save_path}")
-
-            
-        except Exception as e:
-            logger.error(f"Texture generation failed: {e}")
-            # Fall back to untextured mesh if texture generation fails
+                # Convert textured OBJ to GLB using obj2gltf with PBR support
+                logger.info("Converting textured OBJ to GLB...")
+                glb_path_textured = os.path.join(self.save_dir, f'{str(uid)}_texturing.glb')
+                quick_convert_with_obj2gltf(textured_path_obj, glb_path_textured)
+                
+                # Rename to final path
+                final_save_path = os.path.join(self.save_dir, f'{str(uid)}_textured.glb')
+                os.rename(glb_path_textured, final_save_path)
+                logger.info(f"Textured mesh saved to: {final_save_path}")
+                
+            except Exception as e:
+                logger.error(f"Texture generation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fall back to untextured mesh if texture generation fails
+                final_save_path = initial_save_path
+                logger.warning(f"Using untextured mesh as fallback: {final_save_path}")
+        else:
+            # No texture requested, use initial mesh as final
             final_save_path = initial_save_path
-            logger.warning(f"Using untextured mesh as fallback: {final_save_path}")
+            logger.info("Texture generation skipped (not requested)")
 
         if self.low_vram_mode:
             torch.cuda.empty_cache()
