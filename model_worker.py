@@ -148,8 +148,96 @@ class ModelWorker:
         # Load RGB LoRA if specified (for multi-view RGB mode)
         if enable_multiview_rgb and rgb_lora_path:
             logger.info(f"Loading RGB LoRA weights: {rgb_lora_path}")
-            # LoRA loading logic would go here
-            # For now, we assume the pipeline is already configured correctly
+            try:
+                from peft import PeftModel
+                
+                # Check if Lightning checkpoint format (.ckpt)
+                if rgb_lora_path.endswith('.ckpt'):
+                    logger.info("Detected Lightning checkpoint format, loading RGB LoRA weights...")
+                    ckpt = torch.load(rgb_lora_path, map_location='cpu')
+                    
+                    if 'state_dict' in ckpt:
+                        state_dict = ckpt['state_dict']
+                        logger.info(f"Checkpoint contains {len(state_dict)} weights")
+                        
+                        # Analyze checkpoint content
+                        lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                        logger.info(f"  - LoRA parameters: {len(lora_keys)}")
+                        
+                        success_count = 0
+                        
+                        # Load LoRA weights
+                        if lora_keys and hasattr(self.pipeline, 'model'):
+                            try:
+                                logger.info("\nLoading RGB LoRA weights...")
+                                # Extract model-related weights (including LoRA)
+                                model_state_dict = {}
+                                for key, value in state_dict.items():
+                                    if key.startswith('model.'):
+                                        new_key = key[6:]  # Remove 'model.' prefix
+                                        model_state_dict[new_key] = value
+                                
+                                # Apply LoRA config to base model
+                                from peft import LoraConfig, get_peft_model
+                                lora_config = LoraConfig(
+                                    r=8,
+                                    lora_alpha=8,
+                                    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                    lora_dropout=0.0,
+                                )
+                                self.pipeline.model = get_peft_model(self.pipeline.model, lora_config)
+                                
+                                # Load weights including LoRA
+                                missing, unexpected = self.pipeline.model.load_state_dict(
+                                    model_state_dict, strict=False)
+                                logger.info(f"✅ RGB LoRA weights loaded successfully")
+                                logger.info(f"  - Missing keys: {len(missing)}")
+                                logger.info(f"  - Unexpected keys: {len(unexpected)}")
+                                success_count += 1
+                                
+                            except Exception as e:
+                                logger.error(f"❌ Failed to load RGB LoRA weights: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        if success_count > 0:
+                            logger.info(f"\n✅ Successfully loaded RGB LoRA weights from Lightning checkpoint")
+                        else:
+                            logger.warning("\n❌ Failed to load RGB LoRA weights")
+                            
+                    else:
+                        logger.error("❌ Invalid checkpoint format, missing state_dict")
+                
+                elif os.path.isdir(rgb_lora_path):
+                    # Standard PEFT format directory
+                    logger.info("Detected PEFT directory format, using standard LoRA loading...")
+                    
+                    if hasattr(self.pipeline, 'model'):
+                        try:
+                            logger.info("Loading RGB LoRA weights to main DiT model...")
+                            logger.info(f"  Model type: {type(self.pipeline.model)}")
+                            logger.info(f"  LoRA path: {rgb_lora_path}")
+                            
+                            # Apply LoRA directly to pipeline.model
+                            self.pipeline.model = PeftModel.from_pretrained(
+                                self.pipeline.model, rgb_lora_path)
+                            
+                            logger.info("✅ RGB LoRA weights loaded successfully")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to load RGB LoRA weights: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        logger.error("❌ Pipeline does not have model attribute")
+                else:
+                    logger.error(f"❌ Unsupported RGB LoRA weight format: {rgb_lora_path}")
+                    
+            except Exception as e:
+                import traceback
+                logger.error(f"❌ Exception while loading RGB LoRA weights: {e}")
+                logger.error("Detailed error:")
+                traceback.print_exc()
+                logger.warning("Will use base RGB condition model")
         
         # Setup multi-view image processor if needed
         if enable_multiview_rgb:
@@ -389,12 +477,13 @@ class ModelWorker:
             
             # Prepare batch pipeline parameters
             # Use 'trimesh' output_type to get trimesh.Trimesh objects directly
+            # Default values match gradio_app.py for consistency
             pipeline_params = {
                 'image': batch_images,  # Pass list, pipeline will auto-batch
-                'num_inference_steps': ref_params.get('num_inference_steps', 5),
-                'guidance_scale': ref_params.get('guidance_scale', 5.0),
+                'num_inference_steps': ref_params.get('num_inference_steps', 50),  # Match gradio default
+                'guidance_scale': ref_params.get('guidance_scale', 7.5),  # Match gradio default
                 'octree_resolution': ref_params.get('octree_resolution', 256),
-                'num_chunks': ref_params.get('num_chunks', 8000),
+                'num_chunks': ref_params.get('num_chunks', 200000),  # Match gradio default
                 'output_type': 'trimesh'  # Changed from 'mesh' to 'trimesh' to get Trimesh objects
             }
             
