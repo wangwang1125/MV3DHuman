@@ -50,7 +50,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 logger = build_logger("controller", f"{SAVE_DIR}/controller.log")
 
 # Global worker and semaphore instances
-worker = None
+workers = []  # List of worker instances
 model_semaphore = None
 
 # Task status tracking dictionary
@@ -79,6 +79,23 @@ async def update_task_status(uid, status, message=None, file_path=None):
         task_status[uid_str]['file_path'] = file_path
     
     logger.info(f"Task {uid_str} status updated to: {status}")
+
+
+def select_worker():
+    """
+    Select a worker using load balancing strategy.
+    Chooses the worker with the least current tasks.
+    
+    Returns:
+        ModelWorker: Selected worker instance
+    """
+    if not workers:
+        raise RuntimeError("No workers available")
+    
+    # Select worker with minimum load
+    selected = min(workers, key=lambda w: w.get_load())
+    logger.debug(f"Selected worker {selected.worker_id} (load: {selected.get_load()})")
+    return selected
 
 
 app = FastAPI(
@@ -116,9 +133,13 @@ async def generate_3d_model(request: GenerationRequest):
     # Convert Pydantic model to dict for compatibility
     params = request.dict()
     
+    # Select worker using load balancing
+    selected_worker = select_worker()
+    logger.info(f"Using worker {selected_worker.worker_id} for synchronous generation")
+    
     uid = uuid.uuid4()
     try:
-        file_path, uid = await worker.generate(uid, params)
+        file_path, uid = await selected_worker.generate(uid, params)
         return FileResponse(file_path)
     except ValueError as e:
         traceback.print_exc()
@@ -168,10 +189,14 @@ async def send_generation_task(request: GenerationRequest):
         # Initialize task status as pending
         await update_task_status(uid, 'pending')
         
+        # Select worker using load balancing
+        selected_worker = select_worker()
+        logger.info(f"Using worker {selected_worker.worker_id} for async generation task {uid_str}")
+        
         # Create async task instead of thread
         async def run_generation():
             try:
-                file_path, _ = await worker.generate(uid, params)
+                file_path, _ = await selected_worker.generate(uid, params)
                 await update_task_status(uid, 'completed', file_path=file_path)
             except Exception as e:
                 logger.error(f"Generation task {uid_str} failed: {e}")
@@ -198,6 +223,30 @@ async def health_check():
         HealthResponse: Service health status and worker identifier
     """
     return JSONResponse({"status": "healthy", "worker_id": worker_id}, status_code=200)
+
+
+@app.get("/workers/status", tags=["status"])
+async def workers_status():
+    """
+    Get the status of all workers including their current load.
+    
+    Returns:
+        dict: Status information for all workers
+    """
+    worker_statuses = []
+    for i, worker in enumerate(workers):
+        worker_statuses.append({
+            "worker_id": worker.worker_id,
+            "current_tasks": worker.get_load(),
+            "queue_length": len(worker.task_queue),
+            "batch_size": worker.max_batch_size,
+            "batch_timeout": worker.batch_timeout
+        })
+    
+    return JSONResponse({
+        "total_workers": len(workers),
+        "workers": worker_statuses
+    }, status_code=200)
 
 
 @app.get("/status/{uid}", response_model=StatusResponse, tags=["status"])
@@ -294,6 +343,8 @@ if __name__ == "__main__":
                         help='Batch size for parallel processing (default: 2)')
     parser.add_argument('--batch-timeout', type=float, default=1.0,
                         help='Batch timeout in seconds (default: 1.0)')
+    parser.add_argument('--num-workers', type=int, default=2,
+                        help='Number of worker instances to create (default: 2)')
     args = parser.parse_args()
     logger.info(f"args: {args}")
     
@@ -339,26 +390,34 @@ if __name__ == "__main__":
     os.makedirs(SAVE_DIR, exist_ok=True)
     
 
-    # Use semaphore of 1 to ensure only one batch is processed at a time
-    # Batching is handled internally by the worker
+    # Use semaphore of 1 to ensure only one batch is processed at a time per worker
+    # Batching is handled internally by each worker
     model_semaphore = asyncio.Semaphore(1)
 
-    worker = ModelWorker(
-        model_path=args.model_path, 
-        subfolder=args.subfolder,
-        device=args.device, 
-        low_vram_mode=args.low_vram_mode,
-        worker_id=worker_id,
-        model_semaphore=model_semaphore,
-        save_dir=SAVE_DIR,
-        status_callback=update_task_status,
-        enable_multiview_rgb=args.enable_multiview_rgb,
-        rgb_lora_path=args.rgb_lora_path,
-        num_views=args.num_views,
-        batch_size=args.batch_size,
-        batch_timeout=args.batch_timeout
-    )
+    # Create multiple worker instances
+    num_workers = args.num_workers
+    logger.info(f"Creating {num_workers} worker instance(s)...")
     
-    logger.info(f"Worker initialized successfully (worker_id: {worker_id})")
+    for i in range(num_workers):
+        worker_id_i = f"{worker_id}-{i+1}"
+        worker = ModelWorker(
+            model_path=args.model_path, 
+            subfolder=args.subfolder,
+            device=args.device, 
+            low_vram_mode=args.low_vram_mode,
+            worker_id=worker_id_i,
+            model_semaphore=model_semaphore,
+            save_dir=SAVE_DIR,
+            status_callback=update_task_status,
+            enable_multiview_rgb=args.enable_multiview_rgb,
+            rgb_lora_path=args.rgb_lora_path,
+            num_views=args.num_views,
+            batch_size=args.batch_size,
+            batch_timeout=args.batch_timeout
+        )
+        workers.append(worker)
+        logger.info(f"Worker {i+1}/{num_workers} initialized successfully (worker_id: {worker_id_i})")
+    
+    logger.info(f"All {num_workers} worker(s) initialized successfully")
     logger.info(f"Starting API server on {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

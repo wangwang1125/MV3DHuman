@@ -13,6 +13,9 @@ CONCURRENCY=2  # 多视图模式建议降低并发数
 BATCH_SIZE=2       # 批处理大小上限（同时处理的任务数），根据GPU内存调整
 BATCH_TIMEOUT=1.0  # 批处理超时时间（秒），等待多久后即使未满批次也开始处理
 
+# Worker 数量
+NUM_WORKERS=2      # Worker 实例数量（默认2个，提高并发能力）
+
 # 多视图RGB LoRA权重路径（根据实际情况修改）
 # 优先级：Lightning checkpoint (.ckpt) > PEFT格式 (step_*)
 RGB_LORA_PATH=""
@@ -98,6 +101,7 @@ echo "模型: $MODEL_PATH / $SUBFOLDER"
 echo "端口: $PORT"
 echo "地址: http://$HOST:$PORT"
 echo "并发数: $CONCURRENCY"
+echo "Worker数量: $NUM_WORKERS (并行处理模型实例)"
 echo "批处理大小: $BATCH_SIZE (同时处理的任务数)"
 echo "批处理超时: ${BATCH_TIMEOUT}s (等待聚合时间)"
 echo "模式: 4视图RGB重建（不使用法线图或深度图）"
@@ -109,6 +113,7 @@ echo "  - POST /generate - 同步生成"
 echo "  - POST /send - 异步生成"
 echo "  - GET /status/{uid} - 查询状态"
 echo "  - GET /health - 健康检查"
+echo "  - GET /workers/status - Worker状态监控"
 echo ""
 echo "测试脚本: python test_multiview_api.py"
 echo "================================================"
@@ -125,4 +130,5 @@ python api_server.py \
     --device "$DEVICE" \
     --limit-model-concurrency $CONCURRENCY \
     --batch-size $BATCH_SIZE \
-    --batch-timeout $BATCH_TIMEOUT
+    --batch-timeout $BATCH_TIMEOUT \
+    --num-workers $NUM_WORKERS

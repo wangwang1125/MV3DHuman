@@ -110,6 +110,10 @@ class ModelWorker:
         self.queue_lock = asyncio.Lock()
         self.batch_processor_task = None
         
+        # Task tracking for load balancing
+        self.current_tasks = 0
+        self._tasks_lock = asyncio.Lock()
+        
         # Add lock for pipeline thread safety (currently unused, enable if needed)
         # If you encounter GPU race conditions, uncomment the lock usage in _generate_internal()
         self.pipeline_lock = asyncio.Lock()
@@ -568,6 +572,15 @@ class ModelWorker:
             "speed": 1,
             "queue_length": self.get_queue_length(),
         }
+    
+    def get_load(self):
+        """
+        Get the current load (number of active tasks) of the worker.
+        
+        Returns:
+            int: Number of currently processing tasks
+        """
+        return self.current_tasks
 
     async def generate(self, uid, params):
         """
@@ -601,6 +614,11 @@ class ModelWorker:
             self.task_queue.append(task)
             logger.info(f"[Task {uid}] Added to queue (queue length: {len(self.task_queue)})")
         
+        # Increment task counter when task is submitted
+        async with self._tasks_lock:
+            self.current_tasks += 1
+            logger.debug(f"[Worker {self.worker_id}] Task count: {self.current_tasks}")
+        
         # Initialize status
         if self.status_callback:
             await self.status_callback(uid, 'pending')
@@ -612,3 +630,8 @@ class ModelWorker:
         except Exception as e:
             logger.error(f"[Task {uid}] Failed: {e}")
             raise
+        finally:
+            # Decrement task counter when task completes (success or failure)
+            async with self._tasks_lock:
+                self.current_tasks = max(0, self.current_tasks - 1)
+                logger.debug(f"[Worker {self.worker_id}] Task count: {self.current_tasks}")
