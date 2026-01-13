@@ -390,23 +390,24 @@ if __name__ == "__main__":
     os.makedirs(SAVE_DIR, exist_ok=True)
     
 
-    # Use semaphore of 1 to ensure only one batch is processed at a time per worker
-    # Batching is handled internally by each worker
-    model_semaphore = asyncio.Semaphore(1)
-
     # Create multiple worker instances
+    # Each worker gets its own semaphore to allow true parallel processing
     num_workers = args.num_workers
     logger.info(f"Creating {num_workers} worker instance(s)...")
     
     for i in range(num_workers):
         worker_id_i = f"{worker_id}-{i+1}"
+        # Each worker gets its own semaphore (value=1 means one batch per worker at a time)
+        # This allows multiple workers to process batches in parallel
+        worker_semaphore = asyncio.Semaphore(1)
+        
         worker = ModelWorker(
             model_path=args.model_path, 
             subfolder=args.subfolder,
             device=args.device, 
             low_vram_mode=args.low_vram_mode,
             worker_id=worker_id_i,
-            model_semaphore=model_semaphore,
+            model_semaphore=worker_semaphore,
             save_dir=SAVE_DIR,
             status_callback=update_task_status,
             enable_multiview_rgb=args.enable_multiview_rgb,
