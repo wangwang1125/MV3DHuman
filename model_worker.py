@@ -119,6 +119,14 @@ class ModelWorker:
         self.pipeline_lock = asyncio.Lock()
         self.use_pipeline_lock = False  # Set to True if thread safety issues occur
         
+        # Create independent CUDA stream for this worker to avoid GPU blocking
+        # Each worker uses its own stream, allowing parallel GPU execution
+        if device == 'cuda' and torch.cuda.is_available():
+            self.cuda_stream = torch.cuda.Stream()
+            logger.info(f"[Worker {self.worker_id}] Created independent CUDA stream for GPU isolation")
+        else:
+            self.cuda_stream = None
+        
         logger.info(f"Loading the model {model_path} on worker {self.worker_id} ...")
         logger.info(f"Batch processing enabled: batch_size={batch_size}, timeout={batch_timeout}s")
         
@@ -366,7 +374,7 @@ class ModelWorker:
                 return
             
             # Stage 2: Batch GPU inference
-            logger.info(f"[Batch] Starting GPU inference for {len(valid_tasks)} tasks")
+            logger.info(f"[Worker {self.worker_id}] [Batch] Starting GPU inference for {len(valid_tasks)} tasks (using CUDA stream: {self.cuda_stream is not None})")
             
             # Build batch inputs
             batch_images = []
@@ -428,24 +436,42 @@ class ModelWorker:
                 # Temporarily replace prepare_image method
                 self.pipeline.prepare_image = fixed_prepare_image
                 
+                # Define pipeline execution function with CUDA stream support
+                def run_pipeline_with_stream():
+                    """Execute pipeline in worker's CUDA stream for GPU isolation"""
+                    logger.info(f"[Worker {self.worker_id}] Starting pipeline execution in CUDA stream")
+                    if self.cuda_stream is not None:
+                        # Execute all GPU operations in this worker's stream
+                        # The context manager ensures all operations in this block use the stream
+                        with torch.cuda.stream(self.cuda_stream):
+                            result = self.pipeline(**pipeline_params)
+                        # Synchronize this stream to ensure completion before returning
+                        self.cuda_stream.synchronize()
+                        logger.info(f"[Worker {self.worker_id}] Pipeline execution completed, stream synchronized")
+                        return result
+                    else:
+                        # No CUDA stream (CPU mode), execute normally
+                        logger.info(f"[Worker {self.worker_id}] Pipeline execution (CPU mode)")
+                        return self.pipeline(**pipeline_params)
+                
                 try:
                     # Use semaphore to control concurrent batches
                     if self.model_semaphore:
                         async with self.model_semaphore:
                             meshes = await loop.run_in_executor(
                                 None, 
-                                lambda: self.pipeline(**pipeline_params)
+                                run_pipeline_with_stream
                             )
                     else:
                         meshes = await loop.run_in_executor(
                             None, 
-                            lambda: self.pipeline(**pipeline_params)
+                            run_pipeline_with_stream
                         )
                 finally:
                     # Restore original method
                     self.pipeline.prepare_image = original_prepare_image
                 
-                logger.info(f"[Batch] GPU inference completed, got batch results")
+                logger.info(f"[Worker {self.worker_id}] [Batch] GPU inference completed, got batch results")
                 
                 # Extract meshes from batch results
                 # Pipeline returns List[List[trimesh.Trimesh]] for batch
