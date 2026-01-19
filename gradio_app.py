@@ -2340,57 +2340,87 @@ if __name__ == '__main__':
                     
                     # 检查是否是Lightning checkpoint格式 (.ckpt)
                     if args.rgb_lora_path.endswith('.ckpt'):
-                        print("检测到Lightning checkpoint格式，加载RGB LoRA权重...")
+                        print("检测到Lightning checkpoint格式...")
                         ckpt = torch.load(args.rgb_lora_path, map_location='cpu')
                         
                         if 'state_dict' in ckpt:
                             state_dict = ckpt['state_dict']
                             print(f"Checkpoint包含 {len(state_dict)} 个权重")
                             
-                            # 分析checkpoint内容
+                            # 分析checkpoint内容，判断是全量微调还是LoRA
                             lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                            model_keys = [k for k in state_dict.keys() if k.startswith('model.')]
+                            
+                            print(f"  - 模型权重: {len(model_keys)} 个")
                             print(f"  - LoRA参数: {len(lora_keys)} 个")
                             
                             success_count = 0
                             
-                            # 加载LoRA权重
-                            if lora_keys and hasattr(i23d_worker, 'model'):
-                                try:
-                                    print("\n正在加载RGB LoRA权重...")
-                                    # 提取model相关的权重（包含LoRA）
-                                    model_state_dict = {}
-                                    for key, value in state_dict.items():
-                                        if key.startswith('model.'):
-                                            new_key = key[6:]  # 去掉'model.'前缀
-                                            model_state_dict[new_key] = value
-                                    
-                                    # 先应用LoRA配置到基础模型
-                                    from peft import LoraConfig, get_peft_model
-                                    lora_config = LoraConfig(
-                                        r=8,
-                                        lora_alpha=8,
-                                        target_modules=["to_q", "to_k", "to_v", "to_out.0"],
-                                        lora_dropout=0.0,
-                                    )
-                                    i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
-                                    
-                                    # 加载包含LoRA的权重
-                                    missing, unexpected = i23d_worker.model.load_state_dict(
-                                        model_state_dict, strict=False)
-                                    print(f"✅ RGB LoRA权重加载成功")
-                                    print(f"  - Missing keys: {len(missing)}")
-                                    print(f"  - Unexpected keys: {len(unexpected)}")
-                                    success_count += 1
-                                    
-                                except Exception as e:
-                                    print(f"❌ RGB LoRA权重加载失败: {e}")
-                                    import traceback
-                                    traceback.print_exc()
+                            # 判断是全量微调还是LoRA
+                            if lora_keys:
+                                # LoRA格式：包含LoRA参数
+                                print("\n检测到LoRA格式checkpoint，加载RGB LoRA权重...")
+                                if hasattr(i23d_worker, 'model'):
+                                    try:
+                                        # 提取model相关的权重（包含LoRA）
+                                        model_state_dict = {}
+                                        for key, value in state_dict.items():
+                                            if key.startswith('model.'):
+                                                new_key = key[6:]  # 去掉'model.'前缀
+                                                model_state_dict[new_key] = value
+                                        
+                                        # 先应用LoRA配置到基础模型
+                                        from peft import LoraConfig, get_peft_model
+                                        lora_config = LoraConfig(
+                                            r=8,
+                                            lora_alpha=8,
+                                            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                            lora_dropout=0.0,
+                                        )
+                                        i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
+                                        
+                                        # 加载包含LoRA的权重
+                                        missing, unexpected = i23d_worker.model.load_state_dict(
+                                            model_state_dict, strict=False)
+                                        print(f"✅ RGB LoRA权重加载成功")
+                                        print(f"  - Missing keys: {len(missing)}")
+                                        print(f"  - Unexpected keys: {len(unexpected)}")
+                                        success_count += 1
+                                        
+                                    except Exception as e:
+                                        print(f"❌ RGB LoRA权重加载失败: {e}")
+                                        import traceback
+                                        traceback.print_exc()
+                            else:
+                                # 全量微调格式：不包含LoRA参数，直接加载完整模型权重
+                                print("\n检测到全量微调格式checkpoint，加载完整模型权重...")
+                                if hasattr(i23d_worker, 'model'):
+                                    try:
+                                        # 提取model相关的权重（完整权重，不含LoRA）
+                                        model_state_dict = {}
+                                        for key, value in state_dict.items():
+                                            if key.startswith('model.'):
+                                                new_key = key[6:]  # 去掉'model.'前缀
+                                                model_state_dict[new_key] = value
+                                        
+                                        # 直接加载完整模型权重（不使用LoRA）
+                                        missing, unexpected = i23d_worker.model.load_state_dict(
+                                            model_state_dict, strict=False)
+                                        print(f"✅ 全量微调权重加载成功")
+                                        print(f"  - Missing keys: {len(missing)}")
+                                        print(f"  - Unexpected keys: {len(unexpected)}")
+                                        success_count += 1
+                                        
+                                    except Exception as e:
+                                        print(f"❌ 全量微调权重加载失败: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                             
                             if success_count > 0:
-                                print(f"\n✅ 从Lightning checkpoint成功加载RGB LoRA权重")
+                                checkpoint_type = "LoRA" if lora_keys else "全量微调"
+                                print(f"\n✅ 从Lightning checkpoint成功加载RGB {checkpoint_type}权重")
                             else:
-                                print("\n❌ 没有成功加载RGB LoRA权重")
+                                print("\n❌ 没有成功加载RGB权重")
                                 
                         else:
                             print("❌ Checkpoint格式无效，缺少state_dict")

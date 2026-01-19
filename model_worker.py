@@ -153,57 +153,87 @@ class ModelWorker:
                 
                 # Check if Lightning checkpoint format (.ckpt)
                 if rgb_lora_path.endswith('.ckpt'):
-                    logger.info("Detected Lightning checkpoint format, loading RGB LoRA weights...")
+                    logger.info("Detected Lightning checkpoint format...")
                     ckpt = torch.load(rgb_lora_path, map_location='cpu')
                     
                     if 'state_dict' in ckpt:
                         state_dict = ckpt['state_dict']
                         logger.info(f"Checkpoint contains {len(state_dict)} weights")
                         
-                        # Analyze checkpoint content
+                        # Analyze checkpoint content to determine if it's full fine-tuning or LoRA
                         lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                        model_keys = [k for k in state_dict.keys() if k.startswith('model.')]
+                        
+                        logger.info(f"  - Model weights: {len(model_keys)}")
                         logger.info(f"  - LoRA parameters: {len(lora_keys)}")
                         
                         success_count = 0
                         
-                        # Load LoRA weights
-                        if lora_keys and hasattr(self.pipeline, 'model'):
-                            try:
-                                logger.info("\nLoading RGB LoRA weights...")
-                                # Extract model-related weights (including LoRA)
-                                model_state_dict = {}
-                                for key, value in state_dict.items():
-                                    if key.startswith('model.'):
-                                        new_key = key[6:]  # Remove 'model.' prefix
-                                        model_state_dict[new_key] = value
-                                
-                                # Apply LoRA config to base model
-                                from peft import LoraConfig, get_peft_model
-                                lora_config = LoraConfig(
-                                    r=8,
-                                    lora_alpha=8,
-                                    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
-                                    lora_dropout=0.0,
-                                )
-                                self.pipeline.model = get_peft_model(self.pipeline.model, lora_config)
-                                
-                                # Load weights including LoRA
-                                missing, unexpected = self.pipeline.model.load_state_dict(
-                                    model_state_dict, strict=False)
-                                logger.info(f"✅ RGB LoRA weights loaded successfully")
-                                logger.info(f"  - Missing keys: {len(missing)}")
-                                logger.info(f"  - Unexpected keys: {len(unexpected)}")
-                                success_count += 1
-                                
-                            except Exception as e:
-                                logger.error(f"❌ Failed to load RGB LoRA weights: {e}")
-                                import traceback
-                                traceback.print_exc()
+                        # Determine if it's full fine-tuning or LoRA
+                        if lora_keys:
+                            # LoRA format: contains LoRA parameters
+                            logger.info("\nDetected LoRA format checkpoint, loading RGB LoRA weights...")
+                            if hasattr(self.pipeline, 'model'):
+                                try:
+                                    # Extract model-related weights (including LoRA)
+                                    model_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('model.'):
+                                            new_key = key[6:]  # Remove 'model.' prefix
+                                            model_state_dict[new_key] = value
+                                    
+                                    # Apply LoRA config to base model
+                                    from peft import LoraConfig, get_peft_model
+                                    lora_config = LoraConfig(
+                                        r=8,
+                                        lora_alpha=8,
+                                        target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                        lora_dropout=0.0,
+                                    )
+                                    self.pipeline.model = get_peft_model(self.pipeline.model, lora_config)
+                                    
+                                    # Load weights including LoRA
+                                    missing, unexpected = self.pipeline.model.load_state_dict(
+                                        model_state_dict, strict=False)
+                                    logger.info(f"✅ RGB LoRA weights loaded successfully")
+                                    logger.info(f"  - Missing keys: {len(missing)}")
+                                    logger.info(f"  - Unexpected keys: {len(unexpected)}")
+                                    success_count += 1
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to load RGB LoRA weights: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                        else:
+                            # Full fine-tuning format: no LoRA parameters, load full model weights directly
+                            logger.info("\nDetected full fine-tuning format checkpoint, loading full model weights...")
+                            if hasattr(self.pipeline, 'model'):
+                                try:
+                                    # Extract model-related weights (full weights, no LoRA)
+                                    model_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('model.'):
+                                            new_key = key[6:]  # Remove 'model.' prefix
+                                            model_state_dict[new_key] = value
+                                    
+                                    # Load full model weights directly (no LoRA)
+                                    missing, unexpected = self.pipeline.model.load_state_dict(
+                                        model_state_dict, strict=False)
+                                    logger.info(f"✅ Full fine-tuning weights loaded successfully")
+                                    logger.info(f"  - Missing keys: {len(missing)}")
+                                    logger.info(f"  - Unexpected keys: {len(unexpected)}")
+                                    success_count += 1
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to load full fine-tuning weights: {e}")
+                                    import traceback
+                                    traceback.print_exc()
                         
                         if success_count > 0:
-                            logger.info(f"\n✅ Successfully loaded RGB LoRA weights from Lightning checkpoint")
+                            checkpoint_type = "LoRA" if lora_keys else "full fine-tuning"
+                            logger.info(f"\n✅ Successfully loaded RGB {checkpoint_type} weights from Lightning checkpoint")
                         else:
-                            logger.warning("\n❌ Failed to load RGB LoRA weights")
+                            logger.warning("\n❌ Failed to load RGB weights")
                             
                     else:
                         logger.error("❌ Invalid checkpoint format, missing state_dict")
