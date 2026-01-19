@@ -59,3 +59,10 @@ export output_dir=output_folder/dit/overfitting_depth_16_token_4096_lr1e4
 
 bash scripts/train_deepspeed.sh $node_num $node_rank $num_gpu_per_node $master_ip $config $output_dir
 ```
+
+## 继续训练彩色多视图命令
+python main.py \
+    --base configs/hunyuandit-multiview-rgb-finetuning-flowmatching-dinol518-bf16-lr1e5-4096.yaml \
+    --train \
+    --ckpt_path output_folder/dit/multiview_rgb_finetuning/ckpt/ckpt-00020000.ckpt \
+    # ... 其他参数
