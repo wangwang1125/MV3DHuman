@@ -2592,6 +2592,33 @@ if __name__ == '__main__':
         print("正在加载Hunyuan3D-2mv预训练模型...")
         print(f"  模型路径: {args.model_path}")
         print(f"  Subfolder: {args.subfolder}")
+        
+        # 检查是否有自定义模型路径
+        custom_model_path = os.environ.get('HY3DGEN_MODELS')
+        if custom_model_path:
+            print(f"  使用自定义模型路径: {custom_model_path}")
+        
+        # 尝试查找模型文件的实际位置
+        possible_paths = [
+            os.path.expanduser('~/.cache/hy3dgen'),
+            '/root/autodl-tmp/package/hy3dgen',
+            os.path.expanduser('~/autodl-tmp/package/hy3dgen'),
+            './models',
+        ]
+        
+        model_found = False
+        for base_path in possible_paths:
+            test_path = os.path.join(base_path, args.model_path, args.subfolder, 'model.fp16.safetensors')
+            if os.path.exists(test_path):
+                print(f"  ✅ 找到模型文件: {test_path}")
+                # 设置环境变量指向找到的路径
+                os.environ['HY3DGEN_MODELS'] = base_path
+                model_found = True
+                break
+        
+        if not model_found:
+            print("  ⚠️ 未找到模型文件，将从 Hugging Face 下载")
+        
         try:
             i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                 args.model_path,
@@ -2601,8 +2628,20 @@ if __name__ == '__main__':
             )
             print("✅ Hunyuan3D-2mv模型加载成功")
         except Exception as e:
-            print(f"⚠️ 使用safetensors加载失败，尝试使用ckpt格式: {e}")
+            import traceback
+            error_msg = str(e)
+            print(f"⚠️ 使用safetensors加载失败: {error_msg}")
+            print(f"  详细错误信息:")
+            traceback.print_exc()
+            
+            # 如果是模块导入错误，尝试修复配置文件中的模块路径
+            if 'hy3dgen' in error_msg.lower() or 'No module named' in error_msg:
+                print("  🔧 检测到模块导入错误，尝试修复...")
+                # 这里可以尝试修复配置文件，但更简单的方法是直接使用 ckpt
+                print("  💡 建议：检查配置文件中的模块路径是否正确")
+            
             try:
+                print("  🔄 尝试使用ckpt格式...")
                 i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     args.model_path,
                     subfolder=args.subfolder,
@@ -2612,6 +2651,14 @@ if __name__ == '__main__':
                 print("✅ Hunyuan3D-2mv模型加载成功（使用ckpt格式）")
             except Exception as e2:
                 print(f"❌ Hunyuan3D-2mv模型加载失败: {e2}")
+                import traceback
+                traceback.print_exc()
+                print("\n💡 故障排除建议:")
+                print("  1. 检查模型文件是否存在:")
+                print(f"     ls -lh ~/.cache/hy3dgen/{args.model_path}/{args.subfolder}/")
+                print("  2. 设置环境变量指向模型路径:")
+                print(f"     export HY3DGEN_MODELS=/root/autodl-tmp/package/hy3dgen")
+                print("  3. 检查配置文件中的模块路径是否正确")
                 raise
     else:
         print("正在加载标准RGB模型...")
