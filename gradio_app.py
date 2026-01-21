@@ -1080,25 +1080,24 @@ def generation_all(
     logger.info("---Face Reduction takes %s seconds ---" % (time.time() - tmp_time))
     stats['time']['face reduction'] = time.time() - tmp_time
 
-    tmp_time = time.time()
-
-    text_path = os.path.join(save_folder, f'textured_mesh.obj')
-    path_textured = tex_pipeline(mesh_path=path, image_path=image, output_mesh_path=text_path, save_glb=False)
-        
-    logger.info("---Texture Generation takes %s seconds ---" % (time.time() - tmp_time))
-    stats['time']['texture generation'] = time.time() - tmp_time
-
-    tmp_time = time.time()
-    # Convert textured OBJ to GLB using obj2gltf with PBR support
-    glb_path_textured = os.path.join(save_folder, 'textured_mesh.glb')
-    conversion_success = quick_convert_with_obj2gltf(path_textured, glb_path_textured)
-
-    logger.info("---Convert textured OBJ to GLB takes %s seconds ---" % (time.time() - tmp_time))
-    stats['time']['convert textured OBJ to GLB'] = time.time() - tmp_time
+    # 纹理生成功能已禁用
+    # tmp_time = time.time()
+    # text_path = os.path.join(save_folder, f'textured_mesh.obj')
+    # path_textured = tex_pipeline(mesh_path=path, image_path=image, output_mesh_path=text_path, save_glb=False)
+    # logger.info("---Texture Generation takes %s seconds ---" % (time.time() - tmp_time))
+    # stats['time']['texture generation'] = time.time() - tmp_time
+    # tmp_time = time.time()
+    # glb_path_textured = os.path.join(save_folder, 'textured_mesh.glb')
+    # conversion_success = quick_convert_with_obj2gltf(path_textured, glb_path_textured)
+    # logger.info("---Convert textured OBJ to GLB takes %s seconds ---" % (time.time() - tmp_time))
+    # stats['time']['convert textured OBJ to GLB'] = time.time() - tmp_time
+    
+    # 使用白色mesh的HTML viewer替代纹理mesh
     stats['time']['total'] = time.time() - start_time_0
     model_viewer_html_textured = build_model_viewer_html(save_folder, 
                                                          height=HTML_HEIGHT, 
-                                                         width=HTML_WIDTH, textured=True)
+                                                         width=HTML_WIDTH, textured=False)
+    glb_path_textured = path  # 使用白色mesh路径作为占位符
     if args.low_vram_mode:
         torch.cuda.empty_cache()
     
@@ -1546,9 +1545,14 @@ def build_app():
 
                 with gr.Row():
                     btn = gr.Button(value='Gen Shape', variant='primary', min_width=100)
+                    # 纹理生成按钮已禁用
+                    # btn_all = gr.Button(value='Gen Textured Shape',
+                    #                     variant='primary',
+                    #                     visible=HAS_TEXTUREGEN,
+                    #                     min_width=100)
                     btn_all = gr.Button(value='Gen Textured Shape',
                                         variant='primary',
-                                        visible=HAS_TEXTUREGEN,
+                                        visible=False,  # 强制隐藏纹理生成按钮
                                         min_width=100)
 
                 with gr.Group():
@@ -1606,6 +1610,9 @@ Fast for very complex cases, Standard seldom use.',
                                                     value='glb', min_width=100)
                             reduce_face = gr.Checkbox(label='Simplify Mesh', 
                                                       value=False, min_width=100)
+                            # 纹理导出选项已禁用
+                            # export_texture = gr.Checkbox(label='Include Texture', value=False,
+                            #                              visible=False, min_width=100)
                             export_texture = gr.Checkbox(label='Include Texture', value=False,
                                                          visible=False, min_width=100)
                         target_face_num = gr.Slider(maximum=1000000, minimum=100, value=10000,
@@ -1694,43 +1701,12 @@ Fast for very complex cases, Standard seldom use.',
             outputs=[tabs_output],
         )
 
-        btn_all.click(
-            generation_all,
-            inputs=[
-                caption,
-                image,
-                depth_file,  # 单视图深度图文件参数
-                mv_image_front,
-                mv_image_back,
-                mv_image_left,
-                mv_image_right,
-                # 多视图深度图参数
-                mv_depth_front,
-                mv_depth_back,
-                mv_depth_left,
-                mv_depth_right,
-                # 多视图法线图参数
-                mv_normal_front,
-                mv_normal_back,
-                mv_normal_left,
-                mv_normal_right,
-                num_steps,
-                cfg_scale,
-                seed,
-                octree_resolution,
-                check_box_rembg,
-                num_chunks,
-                randomize_seed,
-            ],
-            outputs=[file_out, file_out2, html_gen_mesh, stats, seed, rembg_front, rembg_right, rembg_back, rembg_left]
-        ).then(
-            lambda: (gr.update(visible=True, value=True), gr.update(interactive=False), gr.update(interactive=True),
-                     gr.update(interactive=False)),
-            outputs=[export_texture, reduce_face, confirm_export, file_export],
-        ).then(
-            lambda: gr.update(selected='gen_mesh_panel'),
-            outputs=[tabs_output],
-        )
+        # 纹理生成功能已禁用，btn_all按钮已隐藏
+        # btn_all.click(
+        #     generation_all,
+        #     inputs=[...],
+        #     outputs=[...]
+        # )
 
         def on_gen_mode_change(value):
             if value == 'Turbo':
@@ -1760,34 +1736,34 @@ Fast for very complex cases, Standard seldom use.',
 
             print(f'exporting {file_out}')
             print(f'reduce face to {target_face_num}')
-            if export_texture:
-                mesh = trimesh.load(file_out2)
-                save_folder = gen_save_folder()
-                path = export_mesh(mesh, save_folder, textured=True, type=file_type)
+            
+            # 纹理导出功能已禁用，始终使用非纹理模式
+            # if export_texture:
+            #     mesh = trimesh.load(file_out2)
+            #     save_folder = gen_save_folder()
+            #     path = export_mesh(mesh, save_folder, textured=True, type=file_type)
+            #     save_folder = gen_save_folder()
+            #     _ = export_mesh(mesh, save_folder, textured=True)
+            #     model_viewer_html = build_model_viewer_html(save_folder, 
+            #                                                 height=HTML_HEIGHT, 
+            #                                                 width=HTML_WIDTH,
+            #                                                 textured=True)
+            # else:
+            mesh = trimesh.load(file_out)
+            mesh = floater_remove_worker(mesh)
+            mesh = degenerate_face_remove_worker(mesh)
+            if reduce_face:
+                mesh = face_reduce_worker(mesh, target_face_num)
+            save_folder = gen_save_folder()
+            path = export_mesh(mesh, save_folder, textured=False, type=file_type)
 
-                # for preview
-                save_folder = gen_save_folder()
-                _ = export_mesh(mesh, save_folder, textured=True)
-                model_viewer_html = build_model_viewer_html(save_folder, 
-                                                            height=HTML_HEIGHT, 
-                                                            width=HTML_WIDTH,
-                                                            textured=True)
-            else:
-                mesh = trimesh.load(file_out)
-                mesh = floater_remove_worker(mesh)
-                mesh = degenerate_face_remove_worker(mesh)
-                if reduce_face:
-                    mesh = face_reduce_worker(mesh, target_face_num)
-                save_folder = gen_save_folder()
-                path = export_mesh(mesh, save_folder, textured=False, type=file_type)
-
-                # for preview
-                save_folder = gen_save_folder()
-                _ = export_mesh(mesh, save_folder, textured=False)
-                model_viewer_html = build_model_viewer_html(save_folder, 
-                                                            height=HTML_HEIGHT, 
-                                                            width=HTML_WIDTH,
-                                                            textured=False)
+            # for preview
+            save_folder = gen_save_folder()
+            _ = export_mesh(mesh, save_folder, textured=False)
+            model_viewer_html = build_model_viewer_html(save_folder, 
+                                                        height=HTML_HEIGHT, 
+                                                        width=HTML_WIDTH,
+                                                        textured=False)
             print(f'export to {path}')
             return model_viewer_html, gr.update(value=path, interactive=True)
 
@@ -1876,47 +1852,37 @@ if __name__ == '__main__':
 
     SUPPORTED_FORMATS = ['glb', 'obj', 'ply', 'stl']
 
+    # 纹理生成功能已禁用
     HAS_TEXTUREGEN = False
-    if not args.disable_tex:
-        try:
-            # Apply torchvision fix before importing basicsr/RealESRGAN
-            print("Applying torchvision compatibility fix for texture generation...")
-            try:
-                from torchvision_fix import apply_fix
-                fix_result = apply_fix()
-                if not fix_result:
-                    print("Warning: Torchvision fix may not have been applied successfully")
-            except Exception as fix_error:
-                print(f"Warning: Failed to apply torchvision fix: {fix_error}")
-            
-            # from hy3dgen.texgen import Hunyuan3DPaintPipeline
-            # texgen_worker = Hunyuan3DPaintPipeline.from_pretrained(args.texgen_model_path)
-            # if args.low_vram_mode:
-            #     texgen_worker.enable_model_cpu_offload()
-
-            from hy3dpaint.textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
-            conf = Hunyuan3DPaintConfig(max_num_view=8, resolution=768)
-            conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
-            conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-            conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
-            tex_pipeline = Hunyuan3DPaintPipeline(conf)
-        
-            # Not help much, ignore for now.
-            # if args.compile:
-            #     texgen_worker.models['delight_model'].pipeline.unet.compile()
-            #     texgen_worker.models['delight_model'].pipeline.vae.compile()
-            #     texgen_worker.models['multiview_model'].pipeline.unet.compile()
-            #     texgen_worker.models['multiview_model'].pipeline.vae.compile()
-            
-            HAS_TEXTUREGEN = True
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"Error loading texture generator: {e}")
-            print("Failed to load texture generator.")
-            print('Please try to install requirements by following README.md')
-            HAS_TEXTUREGEN = False
+    tex_pipeline = None  # 占位符，避免后续代码报错
+    
+    # 纹理生成器加载代码已注释
+    # if not args.disable_tex:
+    #     try:
+    #         # Apply torchvision fix before importing basicsr/RealESRGAN
+    #         print("Applying torchvision compatibility fix for texture generation...")
+    #         try:
+    #             from torchvision_fix import apply_fix
+    #             fix_result = apply_fix()
+    #             if not fix_result:
+    #                 print("Warning: Torchvision fix may not have been applied successfully")
+    #         except Exception as fix_error:
+    #             print(f"Warning: Failed to apply torchvision fix: {fix_error}")
+    #         
+    #         from hy3dpaint.textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+    #         conf = Hunyuan3DPaintConfig(max_num_view=8, resolution=768)
+    #         conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+    #         conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+    #         conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
+    #         tex_pipeline = Hunyuan3DPaintPipeline(conf)
+    #         HAS_TEXTUREGEN = True
+    #     except Exception as e:
+    #         import traceback
+    #         traceback.print_exc()
+    #         print(f"Error loading texture generator: {e}")
+    #         print("Failed to load texture generator.")
+    #         print('Please try to install requirements by following README.md')
+    #         HAS_TEXTUREGEN = False
 
     HAS_T2I = True
     if args.enable_t23d:
