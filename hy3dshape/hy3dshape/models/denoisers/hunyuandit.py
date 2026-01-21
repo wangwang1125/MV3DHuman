@@ -481,6 +481,9 @@ class HunYuanDiTPlain(nn.Module):
         # load config
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
+        
+        # 保存预训练模型的配置信息（用于后续检查）
+        pretrained_config = config.copy()
 
         # load ckpt
         if use_safetensors:
@@ -554,10 +557,50 @@ class HunYuanDiTPlain(nn.Module):
             config['target'] = config['target'].replace('hy3dgen.shapegen', 'hy3dshape')
             config['target'] = config['target'].replace('hy3dgen', 'hy3dshape')
 
-        model_kwargs = config['params']
+        model_kwargs = config['params'].copy()  # 复制预训练配置的参数
+        # 获取预训练模型的 text_len（用于后续检查）
+        pretrained_text_len = model_kwargs.get('text_len', 257)
+        
+        # 更新参数：kwargs 中的参数会覆盖预训练配置
         model_kwargs.update(kwargs)
+        
+        # 检查 text_len 是否被修改
+        final_text_len = model_kwargs.get('text_len', pretrained_text_len)
+        text_len_changed = final_text_len != pretrained_text_len
+        
+        if text_len_changed:
+            logger.info(f"text_len changed from {pretrained_text_len} (pretrained) to {final_text_len} (config/kwargs)")
+        else:
+            logger.info(f"Using text_len from pretrained model: {pretrained_text_len}")
 
         model = cls(**model_kwargs)
+        
+        # 检查 pooler.positional_embedding 的大小是否匹配
+        # 只有在 text_len 被修改且大小不匹配时，才重新初始化 pooler
+        if hasattr(model, 'pooler') and model.pooler is not None:
+            expected_pos_emb_size = final_text_len + 1
+            if 'pooler.positional_embedding' in ckpt:
+                pretrained_pos_emb_size = ckpt['pooler.positional_embedding'].shape[0]
+                if pretrained_pos_emb_size != expected_pos_emb_size:
+                    if text_len_changed:
+                        # text_len 被修改了，需要重新初始化 pooler
+                        logger.warning(f"pooler.positional_embedding size mismatch: "
+                                     f"pretrained={pretrained_pos_emb_size} (text_len={pretrained_text_len}), "
+                                     f"expected={expected_pos_emb_size} (text_len={final_text_len}). "
+                                     f"Will reinitialize pooler with correct size.")
+                        # 移除 pooler 相关的权重，让模型重新初始化
+                        pooler_keys = [k for k in ckpt.keys() if k.startswith('pooler.')]
+                        for key in pooler_keys:
+                            del ckpt[key]
+                        logger.info(f"Removed {len(pooler_keys)} pooler weights to allow reinitialization")
+                    else:
+                        # text_len 没有被修改，但大小不匹配，这可能是配置错误
+                        logger.error(f"pooler.positional_embedding size mismatch but text_len not changed! "
+                                   f"pretrained={pretrained_pos_emb_size}, expected={expected_pos_emb_size}. "
+                                   f"This may indicate a configuration error.")
+                else:
+                    logger.info(f"pooler.positional_embedding size matches: {pretrained_pos_emb_size}")
+        
         # 使用 strict=False 允许部分权重缺失（因为可能有些键名不匹配）
         missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
         if missing_keys:

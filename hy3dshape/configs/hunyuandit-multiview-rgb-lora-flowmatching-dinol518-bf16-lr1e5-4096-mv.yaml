@@ -89,6 +89,11 @@ model:
       params:
         with_decoupled_ca: false  # RGB images generate their own tokens via DinoImageEncoderMV
         num_views: 4  # Number of views for the denoiser
+        # text_len must match the actual sequence length from DinoImageEncoderMV
+        # For 4 views with image_size=518 and use_cls_token=True:
+        # Each view: (518//14)^2 + 1 = 1369 + 1 = 1370 tokens
+        # 4 views: 1370 * 4 = 5480 tokens
+        text_len: 5480  # Override pretrained text_len to match multi-view sequence length
         
     scheduler_cfg:
       transport:
