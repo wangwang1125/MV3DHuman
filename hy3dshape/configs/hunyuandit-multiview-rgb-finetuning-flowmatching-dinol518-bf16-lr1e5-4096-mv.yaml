@@ -70,8 +70,9 @@ model:
 
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
-      from_pretrained: tencent/Hunyuan3D-2mv
-      subfolder: hunyuan3d-dit-v2-mv  # 使用mv模型的VAE（如果mv模型包含VAE）
+      from_pretrained: tencent/Hunyuan3D-2.1  # VAE使用Hunyuan3D-2.1（mv模型可能没有单独的VAE）
+      subfolder: hunyuan3d-vae-v2-1  # VAE的subfolder
+      use_safetensors: false  # VAE使用ckpt格式
 
     cond_stage_config:
       target: hy3dshape.models.conditioner.SingleImageEncoder
@@ -90,6 +91,7 @@ model:
       target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
       from_pretrained: tencent/Hunyuan3D-2mv  # Load pretrained weights from Hunyuan3D-2mv
       subfolder: hunyuan3d-dit-v2-mv  # 使用Hunyuan3D-2mv作为预训练模型
+      use_safetensors: true  # Hunyuan3D-2mv使用safetensors格式
       params:
         with_decoupled_ca: false  # RGB images generate their own tokens via DinoImageEncoderMV
         num_views: 4  # Number of views for the denoiser

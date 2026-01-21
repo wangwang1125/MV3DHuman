@@ -1964,42 +1964,54 @@ if __name__ == '__main__':
                         break
         
         # 加载支持深度条件、法线条件或RGB重建的模型
+        # 如果使用Hunyuan3D-2mv，需要使用safetensors格式
+        use_safetensors = IS_MV_PRETRAINED  # mv模型使用safetensors
         try:
             if DEPTH_MODE:
                 # 深度模式需要load_depth参数
                 i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     args.model_path,
                     subfolder=args.subfolder,
-                    use_safetensors=False,
+                    use_safetensors=use_safetensors,
                     device=args.device,
                     # 这些参数可能需要根据实际的pipeline实现调整
                     load_depth=True,  # 启用深度图支持
                     control_in_channels=1,  # 深度图单通道
                 )
+                if use_safetensors:
+                    print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型（深度模式）")
             elif MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
                 # 法线模式和RGB模式不需要load_depth，直接加载标准模型
                 i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     args.model_path,
                     subfolder=args.subfolder,
-                    use_safetensors=False,
+                    use_safetensors=use_safetensors,
                     device=args.device,
                 )
+                if use_safetensors:
+                    print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
             else:
                 # 其他情况加载标准模型
+                # 如果使用Hunyuan3D-2mv，需要使用safetensors格式
+                use_safetensors = IS_MV_PRETRAINED  # mv模型使用safetensors
                 i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     args.model_path,
                     subfolder=args.subfolder,
-                    use_safetensors=False,
+                    use_safetensors=use_safetensors,
                     device=args.device,
                 )
+                if use_safetensors:
+                    print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
         except Exception as e:
             print(f"加载模型失败，回退到标准模型: {e}")
             i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                 args.model_path,
                 subfolder=args.subfolder,
-                use_safetensors=False,
+                use_safetensors=use_safetensors,
                 device=args.device,
             )
+            if use_safetensors:
+                print("✅ 回退到标准模型（使用safetensors格式）")
         
         # 如果提供了 LoRA 路径，则加载 LoRA 权重
         if args.depth_lora_path and os.path.exists(args.depth_lora_path):
@@ -2319,6 +2331,14 @@ if __name__ == '__main__':
             # 自动寻找RGB LoRA权重路径（如果未指定）
             if args.rgb_lora_path is None:
                 default_lora_dirs = [
+                    # mv版本的checkpoint路径（优先）
+                    "./hy3dshape/output_folder/dit/multiview_rgb_finetuning_mv/ckpt",
+                    "./output_folder/dit/multiview_rgb_finetuning_mv/ckpt",
+                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning_mv/ckpt",
+                    "./output_folder/dit/multiview_rgb_lora_finetuning_mv/ckpt",
+                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints_mv",
+                    "./output_folder/dit/multiview_rgb_lora_checkpoints_mv",
+                    # 原始版本的checkpoint路径（向后兼容）
                     "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
                     "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
                     "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints",
