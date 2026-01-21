@@ -776,4 +776,6 @@ class HunYuanDiTPlain(nn.Module):
                 skip_value_list.append(x)
 
         x = self.final_layer(x)
+        # Debug: log output shape if needed
+        # logger.debug(f"HunYuanDiTPlain output shape: {x.shape}")
         return x

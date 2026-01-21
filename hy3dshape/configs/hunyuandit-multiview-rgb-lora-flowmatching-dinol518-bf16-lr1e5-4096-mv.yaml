@@ -87,6 +87,7 @@ model:
       subfolder: hunyuan3d-dit-v2-mv  # 使用Hunyuan3D-2mv作为预训练模型
       use_safetensors: true  # Hunyuan3D-2mv使用safetensors格式
       params:
+        input_size: 4096  # VAE token length (must match VAE output)
         with_decoupled_ca: false  # RGB images generate their own tokens via DinoImageEncoderMV
         num_views: 4  # Number of views for the denoiser
         # text_len must match the actual sequence length from DinoImageEncoderMV

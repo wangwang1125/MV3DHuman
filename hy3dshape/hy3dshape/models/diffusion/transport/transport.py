@@ -174,6 +174,12 @@ class Transport:
         t, xt, ut = self.path_sampler.plan(t, x0, x1)
         model_output = model(xt, t, **model_kwargs)
         B, *_, C = xt.shape
+        expected_shape = (B, *xt.size()[1:-1], C)
+        if model_output.size() != expected_shape:
+            logging.error(f"Model output shape mismatch: got {model_output.size()}, expected {expected_shape}")
+            logging.error(f"xt shape: {xt.size()}, model_output shape: {model_output.size()}")
+            raise AssertionError(f"Model output shape mismatch: got {model_output.size()}, expected {expected_shape}. "
+                               f"xt shape: {xt.size()}")
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
         terms = {}
