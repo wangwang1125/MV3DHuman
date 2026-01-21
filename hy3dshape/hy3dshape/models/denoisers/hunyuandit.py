@@ -766,12 +766,15 @@ class HunYuanDiTPlain(nn.Module):
             additional_cond = self.additional_cond_proj(contexts['additional'])
             cond = torch.cat([cond, additional_cond], dim=1)
 
-        x = torch.cat([c, x], dim=1)
+        # c is [B, D], need to unsqueeze to [B, 1, D] for concat
+        # But block functions expect c to be [B, D], so we keep original c for block calls
+        c_expanded = c.unsqueeze(1)  # [B, 1, D] for concat
+        x = torch.cat([c_expanded, x], dim=1)  # [B, 1 + input_size, D]
 
         skip_value_list = []
         for layer, block in enumerate(self.blocks):
             skip_value = None if layer <= self.depth // 2 else skip_value_list.pop()
-            x = block(x, c, cond, skip_value=skip_value)
+            x = block(x, c, cond, skip_value=skip_value)  # c is still [B, D] for block
             if layer < self.depth // 2:
                 skip_value_list.append(x)
 
