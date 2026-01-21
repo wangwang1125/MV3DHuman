@@ -749,18 +749,31 @@ class HunYuanDiTPlain(nn.Module):
     def forward(self, x, t, contexts, **kwargs):
         cond = contexts['main']
 
+        # Ensure x is [B, N, C] before x_embedder
+        # x might be [B, H, W, C] (4D) or [B, N, C] (3D)
+        if x.dim() == 4:
+            # Reshape from [B, H, W, C] to [B, H*W, C]
+            B, H, W, C = x.shape
+            x = x.view(B, H * W, C)
+        elif x.dim() != 3:
+            raise ValueError(f"Unexpected x shape: {x.shape}, expected [B, N, C] or [B, H, W, C]")
+
         t = self.t_embedder(t, condition=kwargs.get('guidance_cond'))
-        x = self.x_embedder(x)
+        x = self.x_embedder(x)  # [B, N, hidden_size]
 
         if self.use_pos_emb:
             pos_embed = self.pos_embed.to(x.dtype)
             x = x + pos_embed
 
         if self.use_attention_pooling:
-            extra_vec = self.pooler(cond, None)
-            c = t + self.extra_embedder(extra_vec)  # [B, D]
+            extra_vec = self.pooler(cond, None)  # [B, D] or [D]
+            # Handle both [B, D] and [D] cases
+            if extra_vec.dim() == 1:
+                extra_vec = extra_vec.unsqueeze(0)  # [D] -> [1, D]
+            extra_vec_emb = self.extra_embedder(extra_vec)  # [B, D]
+            c = t + extra_vec_emb  # [B, D]
         else:
-            c = t
+            c = t  # [B, D]
 
         if self.with_decoupled_ca:
             additional_cond = self.additional_cond_proj(contexts['additional'])
@@ -768,7 +781,17 @@ class HunYuanDiTPlain(nn.Module):
 
         # c is [B, D], need to unsqueeze to [B, 1, D] for concat
         # But block functions expect c to be [B, D], so we keep original c for block calls
-        c_expanded = c.unsqueeze(1)  # [B, 1, D] for concat
+        if c.dim() == 1:
+            c = c.unsqueeze(0)  # [D] -> [1, D], but this shouldn't happen
+        if c.dim() == 2:
+            c_expanded = c.unsqueeze(1)  # [B, D] -> [B, 1, D]
+        else:
+            raise ValueError(f"Unexpected c shape: {c.shape}, expected [B, D]")
+        
+        # x should be [B, N, D] (3D) at this point
+        if x.dim() != 3:
+            raise ValueError(f"Unexpected x shape after x_embedder: {x.shape}, expected [B, N, D]")
+        
         x = torch.cat([c_expanded, x], dim=1)  # [B, 1 + input_size, D]
 
         skip_value_list = []
