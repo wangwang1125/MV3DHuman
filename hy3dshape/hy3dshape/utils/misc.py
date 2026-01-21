@@ -54,10 +54,17 @@ def instantiate_from_config(config, **kwargs):
     cls = get_obj_from_str(config["target"])
 
     if config.get("from_pretrained", None):
+        # 支持 subfolder 参数
+        from_pretrained_kwargs = {
+            'use_safetensors': config.get('use_safetensors', False),
+            'variant': config.get('variant', 'fp16')
+        }
+        # 如果配置中有 subfolder，添加到参数中
+        if 'subfolder' in config:
+            from_pretrained_kwargs['subfolder'] = config['subfolder']
         return cls.from_pretrained(
                     config["from_pretrained"], 
-                    use_safetensors=config.get('use_safetensors', False),
-                    variant=config.get('variant', 'fp16'))
+                    **from_pretrained_kwargs)
 
     params = config.get("params", dict())
     # params.update(kwargs)
