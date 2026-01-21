@@ -145,22 +145,6 @@ class Hunyuan3DDiTPipeline:
         # load config
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        
-        # Fix module paths: replace hy3dgen with hy3dshape
-        def fix_config_paths(obj):
-            """Recursively fix module paths in config"""
-            if isinstance(obj, dict):
-                for key, value in obj.items():
-                    if key == 'target' and isinstance(value, str):
-                        # Replace hy3dgen with hy3dshape
-                        obj[key] = value.replace('hy3dgen.', 'hy3dshape.').replace('hy3dgen', 'hy3dshape')
-                    else:
-                        fix_config_paths(value)
-            elif isinstance(obj, list):
-                for item in obj:
-                    fix_config_paths(item)
-        
-        fix_config_paths(config)
 
         # load ckpt
         if use_safetensors:
@@ -183,6 +167,22 @@ class Hunyuan3DDiTPipeline:
         else:
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
         # load model
+        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
+        def fix_config_module_path(cfg):
+            """将配置中的 hy3dgen 模块路径替换为 hy3dshape"""
+            if isinstance(cfg, dict):
+                if 'target' in cfg:
+                    cfg['target'] = cfg['target'].replace('hy3dgen.shapegen', 'hy3dshape')
+                    cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
+                if 'params' in cfg:
+                    fix_config_module_path(cfg['params'])
+            elif isinstance(cfg, list):
+                for item in cfg:
+                    fix_config_module_path(item)
+        
+        # 修复所有配置中的模块路径
+        fix_config_module_path(config)
+        
         model = instantiate_from_config(config['model'])
         model.load_state_dict(ckpt['model'])
         vae = instantiate_from_config(config['vae'])

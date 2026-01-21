@@ -481,22 +481,6 @@ class HunYuanDiTPlain(nn.Module):
         # load config
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        
-        # Fix module paths: replace hy3dgen with hy3dshape
-        def fix_config_paths(obj):
-            """Recursively fix module paths in config"""
-            if isinstance(obj, dict):
-                for key, value in obj.items():
-                    if key == 'target' and isinstance(value, str):
-                        # Replace hy3dgen with hy3dshape
-                        obj[key] = value.replace('hy3dgen.', 'hy3dshape.').replace('hy3dgen', 'hy3dshape')
-                    else:
-                        fix_config_paths(value)
-            elif isinstance(obj, list):
-                for item in obj:
-                    fix_config_paths(item)
-        
-        fix_config_paths(config)
 
         # load ckpt
         if use_safetensors:
@@ -515,6 +499,11 @@ class HunYuanDiTPlain(nn.Module):
             ckpt = ckpt['model']
         if 'model' in config:
             config = config['model']
+
+        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
+        if 'target' in config:
+            config['target'] = config['target'].replace('hy3dgen.shapegen', 'hy3dshape')
+            config['target'] = config['target'].replace('hy3dgen', 'hy3dshape')
 
         model_kwargs = config['params']
         model_kwargs.update(kwargs)
