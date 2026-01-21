@@ -503,6 +503,10 @@ class HunYuanDiTPlain(nn.Module):
         elif isinstance(ckpt, dict) and any(k.startswith('model.') for k in ckpt.keys()):
             # 保存原始 ckpt 以便后续使用
             original_ckpt = ckpt
+            # 调试：打印一些键名示例
+            sample_keys = [k for k in original_ckpt.keys() if k.startswith('model.')][:10]
+            logger.info(f"Sample keys in safetensors (first 10 'model.*' keys): {sample_keys}")
+            
             # 提取所有以 'model.' 开头的键，并去掉前缀
             # 同时过滤掉不属于 DiT 核心模型的键（如 conditioner、vae、double_blocks、single_blocks 等）
             model_ckpt = {}
@@ -518,20 +522,29 @@ class HunYuanDiTPlain(nn.Module):
                     # - extra_embedder: 额外嵌入
                     # - blocks: Transformer blocks（注意：blocks 后面可能有数字，所以用 'blocks' 而不是 'blocks.'）
                     # - final_layer: 最终输出层（但排除 adaLN_modulation，那是条件相关的）
-                    if new_key.startswith(('x_embedder', 't_embedder', 'pooler', 'extra_embedder', 'blocks', 'final_layer.norm_final', 'final_layer.linear')):
-                        model_ckpt[new_key] = value
-            ckpt = model_ckpt
-            logger.info(f"Extracted {len(ckpt)} DiT model weights from safetensors file")
-            if len(ckpt) == 0:
-                logger.warning("No DiT model weights found! Trying to load all 'model.*' keys...")
-                # 如果过滤后没有权重，尝试加载所有 model.* 键（可能是不同的键名格式）
+                    # 注意：需要排除 double_blocks、single_blocks、cond_in、time_in、latent_in 等
+                    excluded_prefixes = ('double_blocks', 'single_blocks', 'cond_in', 'time_in', 'latent_in', 'final_layer.adaLN_modulation')
+                    if not any(new_key.startswith(prefix) for prefix in excluded_prefixes):
+                        # 包含所有 DiT 核心模型的键
+                        if new_key.startswith(('x_embedder', 't_embedder', 'pooler', 'extra_embedder', 'blocks', 'final_layer')):
+                            model_ckpt[new_key] = value
+            
+            logger.info(f"Extracted {len(model_ckpt)} DiT model weights from safetensors file")
+            
+            # 如果提取的权重太少，尝试加载所有 model.* 键（排除已知的非 DiT 键）
+            if len(model_ckpt) < 100:  # 如果提取的权重少于100个，可能有问题
+                logger.warning(f"Only extracted {len(model_ckpt)} weights, trying to load all 'model.*' keys (excluding non-DiT keys)...")
                 model_ckpt = {}
+                excluded_prefixes = ('double_blocks', 'single_blocks', 'cond_in', 'time_in', 'latent_in', 'final_layer.adaLN_modulation')
                 for key, value in original_ckpt.items():
                     if key.startswith('model.'):
                         new_key = key[6:]
-                        model_ckpt[new_key] = value
-                ckpt = model_ckpt
-                logger.info(f"Loaded {len(ckpt)} weights with 'model.' prefix")
+                        # 排除非 DiT 的键
+                        if not any(new_key.startswith(prefix) for prefix in excluded_prefixes):
+                            model_ckpt[new_key] = value
+                logger.info(f"Loaded {len(model_ckpt)} weights with 'model.' prefix (after filtering)")
+            
+            ckpt = model_ckpt
         
         if 'model' in config:
             config = config['model']
