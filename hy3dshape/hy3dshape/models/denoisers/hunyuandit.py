@@ -495,8 +495,44 @@ class HunYuanDiTPlain(nn.Module):
         else:
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
 
-        if 'model' in ckpt:
+        # 处理不同的checkpoint格式
+        # 1. 如果是嵌套字典格式（如 {'model': {...}}）
+        if isinstance(ckpt, dict) and 'model' in ckpt and isinstance(ckpt['model'], dict):
             ckpt = ckpt['model']
+        # 2. 如果是扁平字典格式，键名包含 'model.' 前缀（如 safetensors 格式）
+        elif isinstance(ckpt, dict) and any(k.startswith('model.') for k in ckpt.keys()):
+            # 保存原始 ckpt 以便后续使用
+            original_ckpt = ckpt
+            # 提取所有以 'model.' 开头的键，并去掉前缀
+            # 同时过滤掉不属于 DiT 核心模型的键（如 conditioner、vae、double_blocks、single_blocks 等）
+            model_ckpt = {}
+            for key, value in original_ckpt.items():
+                if key.startswith('model.'):
+                    # 去掉 'model.' 前缀
+                    new_key = key[6:]  # len('model.') = 6
+                    # 只保留 DiT 核心模型的权重
+                    # DiT 核心模型的键通常以以下开头：
+                    # - x_embedder: 输入嵌入
+                    # - t_embedder: 时间嵌入
+                    # - pooler: 池化层
+                    # - extra_embedder: 额外嵌入
+                    # - blocks: Transformer blocks（注意：blocks 后面可能有数字，所以用 'blocks' 而不是 'blocks.'）
+                    # - final_layer: 最终输出层（但排除 adaLN_modulation，那是条件相关的）
+                    if new_key.startswith(('x_embedder', 't_embedder', 'pooler', 'extra_embedder', 'blocks', 'final_layer.norm_final', 'final_layer.linear')):
+                        model_ckpt[new_key] = value
+            ckpt = model_ckpt
+            logger.info(f"Extracted {len(ckpt)} DiT model weights from safetensors file")
+            if len(ckpt) == 0:
+                logger.warning("No DiT model weights found! Trying to load all 'model.*' keys...")
+                # 如果过滤后没有权重，尝试加载所有 model.* 键（可能是不同的键名格式）
+                model_ckpt = {}
+                for key, value in original_ckpt.items():
+                    if key.startswith('model.'):
+                        new_key = key[6:]
+                        model_ckpt[new_key] = value
+                ckpt = model_ckpt
+                logger.info(f"Loaded {len(ckpt)} weights with 'model.' prefix")
+        
         if 'model' in config:
             config = config['model']
 
@@ -509,7 +545,22 @@ class HunYuanDiTPlain(nn.Module):
         model_kwargs.update(kwargs)
 
         model = cls(**model_kwargs)
-        model.load_state_dict(ckpt)
+        # 使用 strict=False 允许部分权重缺失（因为可能有些键名不匹配）
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        if missing_keys:
+            logger.warning(f"Missing keys when loading DiT model: {len(missing_keys)} keys")
+            # 只显示前10个缺失的键
+            for key in missing_keys[:10]:
+                logger.warning(f"  - {key}")
+            if len(missing_keys) > 10:
+                logger.warning(f"  ... and {len(missing_keys) - 10} more")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys when loading DiT model: {len(unexpected_keys)} keys")
+            # 只显示前10个意外的键
+            for key in unexpected_keys[:10]:
+                logger.warning(f"  - {key}")
+            if len(unexpected_keys) > 10:
+                logger.warning(f"  ... and {len(unexpected_keys) - 10} more")
         model.to(device=device, dtype=dtype)
         return model
 
