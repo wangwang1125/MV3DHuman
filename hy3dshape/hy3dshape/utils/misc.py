@@ -62,6 +62,13 @@ def instantiate_from_config(config, **kwargs):
         # 如果配置中有 subfolder，添加到参数中
         if 'subfolder' in config:
             from_pretrained_kwargs['subfolder'] = config['subfolder']
+        
+        # 将 params 中的参数传递给 from_pretrained（如 text_len）
+        params = config.get("params", dict())
+        from_pretrained_kwargs.update(params)
+        # kwargs 中的参数优先级最高
+        from_pretrained_kwargs.update(kwargs)
+        
         return cls.from_pretrained(
                     config["from_pretrained"], 
                     **from_pretrained_kwargs)
