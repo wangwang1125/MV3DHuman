@@ -758,19 +758,41 @@ class HunYuanDiTPlain(nn.Module):
         elif x.dim() != 3:
             raise ValueError(f"Unexpected x shape: {x.shape}, expected [B, N, C] or [B, H, W, C]")
 
-        t = self.t_embedder(t, condition=kwargs.get('guidance_cond'))
+        t = self.t_embedder(t, condition=kwargs.get('guidance_cond'))  # TimestepEmbedder returns [B, 1, D]
+        # TimestepEmbedder.forward returns t.unsqueeze(dim=1), so t is [B, 1, D]
+        # Squeeze to [B, D]
+        if t.dim() == 3:
+            if t.shape[1] == 1:
+                t = t.squeeze(1)  # [B, 1, D] -> [B, D]
+            else:
+                t = t.mean(dim=1)  # [B, N, D] -> [B, D]
+        elif t.dim() > 3:
+            t = t.view(t.shape[0], -1)  # Flatten to [B, D]
+        elif t.dim() == 1:
+            t = t.unsqueeze(0)  # [D] -> [1, D]
+        
         x = self.x_embedder(x)  # [B, N, hidden_size]
 
         if self.use_pos_emb:
             pos_embed = self.pos_embed.to(x.dtype)
             x = x + pos_embed
-
+        
         if self.use_attention_pooling:
-            extra_vec = self.pooler(cond, None)  # [B, D] or [D]
-            # Handle both [B, D] and [D] cases
+            extra_vec = self.pooler(cond, None)  # Should be [B, D] or [D]
+            # Handle different shapes
             if extra_vec.dim() == 1:
                 extra_vec = extra_vec.unsqueeze(0)  # [D] -> [1, D]
+            elif extra_vec.dim() > 2:
+                # If extra_vec is [B, N, D] or higher, take mean or first element
+                extra_vec = extra_vec.mean(dim=1) if extra_vec.dim() == 3 else extra_vec.view(extra_vec.shape[0], -1)
+            
             extra_vec_emb = self.extra_embedder(extra_vec)  # [B, D]
+            # Ensure extra_vec_emb is [B, D]
+            if extra_vec_emb.dim() > 2:
+                extra_vec_emb = extra_vec_emb.mean(dim=1) if extra_vec_emb.dim() == 3 else extra_vec_emb.view(extra_vec_emb.shape[0], -1)
+            elif extra_vec_emb.dim() == 1:
+                extra_vec_emb = extra_vec_emb.unsqueeze(0)
+            
             c = t + extra_vec_emb  # [B, D]
         else:
             c = t  # [B, D]
@@ -779,14 +801,19 @@ class HunYuanDiTPlain(nn.Module):
             additional_cond = self.additional_cond_proj(contexts['additional'])
             cond = torch.cat([cond, additional_cond], dim=1)
 
+        # Ensure c is [B, D]
+        if c.dim() > 2:
+            # If c is [B, N, D] or higher, take mean or first element
+            c = c.mean(dim=1) if c.dim() == 3 else c.view(c.shape[0], -1)
+        elif c.dim() == 1:
+            c = c.unsqueeze(0)  # [D] -> [1, D]
+        
+        if c.dim() != 2:
+            raise ValueError(f"Unexpected c shape after processing: {c.shape}, expected [B, D]")
+        
         # c is [B, D], need to unsqueeze to [B, 1, D] for concat
         # But block functions expect c to be [B, D], so we keep original c for block calls
-        if c.dim() == 1:
-            c = c.unsqueeze(0)  # [D] -> [1, D], but this shouldn't happen
-        if c.dim() == 2:
-            c_expanded = c.unsqueeze(1)  # [B, D] -> [B, 1, D]
-        else:
-            raise ValueError(f"Unexpected c shape: {c.shape}, expected [B, D]")
+        c_expanded = c.unsqueeze(1)  # [B, D] -> [B, 1, D]
         
         # x should be [B, N, D] (3D) at this point
         if x.dim() != 3:
