@@ -1840,7 +1840,15 @@ if __name__ == '__main__':
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    MV_MODE = 'mv' in args.model_path or args.enable_multiview_depth or args.enable_multiview_normal or args.enable_multiview_rgb
+    
+    # 检测是否是标准的Hunyuan3D-2mv模型（从Hugging Face加载）
+    IS_MV_PRETRAINED = 'Hunyuan3D-2mv' in args.model_path or 'mv' in args.model_path.lower()
+    if IS_MV_PRETRAINED and args.subfolder == 'hunyuan3d-dit-v2-1':
+        # 自动设置正确的subfolder
+        args.subfolder = 'hunyuan3d-dit-v2-mv'
+        print(f"✅ 检测到Hunyuan3D-2mv模型，自动设置subfolder为: {args.subfolder}")
+    
+    MV_MODE = IS_MV_PRETRAINED or args.enable_multiview_depth or args.enable_multiview_normal or args.enable_multiview_rgb
     TURBO_MODE = 'turbo' in args.subfolder
     DEPTH_MODE = args.enable_depth or args.enable_multiview_depth  # 标记是否使用深度图模式
     MULTIVIEW_DEPTH_MODE = args.enable_multiview_depth  # 标记是否使用多视图深度图模式
@@ -2579,6 +2587,32 @@ if __name__ == '__main__':
                         # 替换encoder
                         i23d_worker.conditioner.main_image_encoder = new_encoder
                         print(f"✅ 已成功替换为DinoImageEncoderMV (视图数量: {args.num_views})")
+    elif IS_MV_PRETRAINED:
+        # 加载标准的Hunyuan3D-2mv预训练模型（从Hugging Face）
+        print("正在加载Hunyuan3D-2mv预训练模型...")
+        print(f"  模型路径: {args.model_path}")
+        print(f"  Subfolder: {args.subfolder}")
+        try:
+            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                args.model_path,
+                subfolder=args.subfolder,
+                use_safetensors=True,  # mv模型使用safetensors格式
+                device=args.device,
+            )
+            print("✅ Hunyuan3D-2mv模型加载成功")
+        except Exception as e:
+            print(f"⚠️ 使用safetensors加载失败，尝试使用ckpt格式: {e}")
+            try:
+                i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                    args.model_path,
+                    subfolder=args.subfolder,
+                    use_safetensors=False,
+                    device=args.device,
+                )
+                print("✅ Hunyuan3D-2mv模型加载成功（使用ckpt格式）")
+            except Exception as e2:
+                print(f"❌ Hunyuan3D-2mv模型加载失败: {e2}")
+                raise
     else:
         print("正在加载标准RGB模型...")
         i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
