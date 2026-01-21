@@ -110,6 +110,11 @@ def export_to_trimesh(mesh_output):
 
 
 def get_obj_from_str(string, reload=False):
+    # 修复模块路径：将 hy3dgen 替换为 hy3dshape
+    if 'hy3dgen' in string:
+        string = string.replace('hy3dgen.shapegen', 'hy3dshape')
+        string = string.replace('hy3dgen', 'hy3dshape')
+    
     module, cls = string.rsplit(".", 1)
     if reload:
         module_imp = importlib.import_module(module)
@@ -168,17 +173,28 @@ class Hunyuan3DDiTPipeline:
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
         # load model
         # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
-        def fix_config_module_path(cfg):
-            """将配置中的 hy3dgen 模块路径替换为 hy3dshape"""
+        def fix_config_module_path(cfg, depth=0):
+            """将配置中的 hy3dgen 模块路径替换为 hy3dshape（递归修复）"""
+            if depth > 10:  # 防止无限递归
+                return
+            
             if isinstance(cfg, dict):
+                # 修复 target 字段
                 if 'target' in cfg:
-                    cfg['target'] = cfg['target'].replace('hy3dgen.shapegen', 'hy3dshape')
-                    cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
-                if 'params' in cfg:
-                    fix_config_module_path(cfg['params'])
+                    original_target = cfg['target']
+                    if 'hy3dgen' in original_target:
+                        cfg['target'] = original_target.replace('hy3dgen.shapegen', 'hy3dshape')
+                        cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
+                        logger.info(f"修复模块路径: {original_target} -> {cfg['target']}")
+                
+                # 递归修复所有嵌套的字典和列表
+                for key, value in cfg.items():
+                    if isinstance(value, (dict, list)):
+                        fix_config_module_path(value, depth + 1)
             elif isinstance(cfg, list):
                 for item in cfg:
-                    fix_config_module_path(item)
+                    if isinstance(item, (dict, list)):
+                        fix_config_module_path(item, depth + 1)
         
         # 修复所有配置中的模块路径
         fix_config_module_path(config)
