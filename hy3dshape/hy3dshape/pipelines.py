@@ -20,6 +20,7 @@ from typing import List, Optional, Union
 
 import numpy as np
 import torch
+import torch.serialization
 import trimesh
 import yaml
 from PIL import Image
@@ -125,7 +126,28 @@ def get_obj_from_str(string, reload=False):
 def instantiate_from_config(config, **kwargs):
     if "target" not in config:
         raise KeyError("Expected key `target` to instantiate.")
+    
     cls = get_obj_from_str(config["target"])
+    
+    # Support from_pretrained parameter (like in hy3dshape.utils.misc.instantiate_from_config)
+    if config.get("from_pretrained", None):
+        from_pretrained_kwargs = {
+            'use_safetensors': config.get('use_safetensors', False),
+            'variant': config.get('variant', 'fp16')
+        }
+        if 'subfolder' in config:
+            from_pretrained_kwargs['subfolder'] = config['subfolder']
+        
+        # Merge params into from_pretrained_kwargs
+        params = config.get("params", dict())
+        from_pretrained_kwargs.update(params)
+        from_pretrained_kwargs.update(kwargs)
+        
+        return cls.from_pretrained(
+            config["from_pretrained"], 
+            **from_pretrained_kwargs
+        )
+    
     params = config.get("params", dict())
     kwargs.update(params)
     instance = cls(**kwargs)
@@ -145,8 +167,21 @@ class Hunyuan3DDiTPipeline:
         device='cuda',
         dtype=torch.float16,
         use_safetensors=None,
+        lora_path=None,
         **kwargs,
     ):
+        """
+        Load pipeline from checkpoint file.
+        
+        Args:
+            ckpt_path: Path to checkpoint file (Lightning or inference format)
+            config_path: Path to config.yaml file
+            device: Device to load model on
+            dtype: Data type for model
+            use_safetensors: Whether to use safetensors format
+            lora_path: Optional path to LoRA weights file (separate from main checkpoint)
+            **kwargs: Additional arguments
+        """
         # load config
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
@@ -170,24 +205,76 @@ class Hunyuan3DDiTPipeline:
                     ckpt[model_name] = {}
                 ckpt[model_name][new_key] = value
         else:
-            ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
-        # load model
-        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
+            # 尝试使用 weights_only=True 加载（更安全）
+            try:
+                ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+            except Exception as e:
+                # 如果 weights_only=True 失败（可能包含 PosixPath 等对象），尝试添加安全全局变量
+                error_str = str(e)
+                if 'PosixPath' in error_str or 'pathlib' in error_str:
+                    logger.warning(f"Checkpoint 包含 pathlib.PosixPath 对象，尝试添加安全全局变量...")
+                    try:
+                        from pathlib import PosixPath
+                        # torch.serialization 已在文件顶部导入
+                        torch.serialization.add_safe_globals([PosixPath])
+                        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+                        logger.info("✅ 成功使用安全全局变量加载 checkpoint")
+                    except Exception as e2:
+                        # 如果还是失败，对于 Lightning checkpoint（用户自己的训练结果），使用 weights_only=False
+                        logger.warning(f"使用安全全局变量仍失败: {e2}")
+                        logger.warning("对于 Lightning checkpoint（训练结果），使用 weights_only=False 加载（这是安全的）")
+                        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+                else:
+                    # 其他错误，也尝试使用 weights_only=False
+                    logger.warning(f"weights_only=True 加载失败: {e}")
+                    logger.warning("尝试使用 weights_only=False 加载（仅对可信的 checkpoint 使用）")
+                    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        
+        # 检测 checkpoint 格式：Lightning 格式包含 'state_dict'，推理格式包含 'model', 'vae', 'conditioner'
+        is_lightning_checkpoint = isinstance(ckpt, dict) and 'state_dict' in ckpt
+        is_inference_checkpoint = isinstance(ckpt, dict) and 'model' in ckpt and 'vae' in ckpt
+        
+        if is_lightning_checkpoint:
+            logger.info("✅ 检测到 Lightning checkpoint 格式")
+            # Lightning checkpoint: 需要先加载预训练模型，然后加载权重
+            return cls._load_from_lightning_checkpoint(
+                ckpt, config, device, dtype, lora_path, **kwargs
+            )
+        elif is_inference_checkpoint:
+            logger.info("✅ 检测到推理格式 checkpoint")
+            # 推理格式 checkpoint: 直接加载
+            return cls._load_from_inference_checkpoint(
+                ckpt, config, device, dtype, lora_path, **kwargs
+            )
+        else:
+            raise ValueError(f"无法识别 checkpoint 格式: {ckpt_path}\n"
+                           f"Lightning checkpoint 应包含 'state_dict' 键\n"
+                           f"推理格式 checkpoint 应包含 'model', 'vae', 'conditioner' 键")
+    
+    @classmethod
+    def _load_from_lightning_checkpoint(
+        cls,
+        ckpt,
+        config,
+        device='cuda',
+        dtype=torch.float16,
+        lora_path=None,
+        **kwargs,
+    ):
+        """从 Lightning checkpoint 加载模型"""
+        state_dict = ckpt['state_dict']
+        
+        # 修复配置文件中的模块路径
         def fix_config_module_path(cfg, depth=0):
-            """将配置中的 hy3dgen 模块路径替换为 hy3dshape（递归修复）"""
-            if depth > 10:  # 防止无限递归
+            if depth > 10:
                 return
-            
             if isinstance(cfg, dict):
-                # 修复 target 字段
                 if 'target' in cfg:
                     original_target = cfg['target']
                     if 'hy3dgen' in original_target:
                         cfg['target'] = original_target.replace('hy3dgen.shapegen', 'hy3dshape')
                         cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
                         logger.info(f"修复模块路径: {original_target} -> {cfg['target']}")
-                
-                # 递归修复所有嵌套的字典和列表
                 for key, value in cfg.items():
                     if isinstance(value, (dict, list)):
                         fix_config_module_path(value, depth + 1)
@@ -196,19 +283,280 @@ class Hunyuan3DDiTPipeline:
                     if isinstance(item, (dict, list)):
                         fix_config_module_path(item, depth + 1)
         
-        # 修复所有配置中的模块路径
         fix_config_module_path(config)
         
+        # Lightning checkpoint 需要先加载预训练模型
+        # 检查 model 配置是否有 from_pretrained
+        model_config = config.get('model', {})
+        if 'params' in model_config:
+            denoiser_cfg = model_config['params'].get('denoiser_cfg', {})
+            if denoiser_cfg.get('from_pretrained'):
+                logger.info("Lightning checkpoint: 先加载预训练模型，然后加载 checkpoint 权重")
+                # 先加载预训练模型
+                pipeline = cls.from_pretrained(
+                    denoiser_cfg['from_pretrained'],
+                    subfolder=denoiser_cfg.get('subfolder', 'hunyuan3d-dit-v2-1'),
+                    use_safetensors=denoiser_cfg.get('use_safetensors', False),
+                    device=device,
+                    dtype=dtype,
+                )
+            else:
+                # 没有 from_pretrained，直接实例化
+                pipeline = cls._instantiate_from_config(config, device, dtype, **kwargs)
+        else:
+            pipeline = cls._instantiate_from_config(config, device, dtype, **kwargs)
+        
+        # 从 Lightning checkpoint 加载权重
+        logger.info("正在从 Lightning checkpoint 加载权重...")
+        
+        # 加载 model (DiT) 权重
+        if hasattr(pipeline, 'model') and pipeline.model is not None:
+            model_state_dict = {}
+            for key, value in state_dict.items():
+                if key.startswith('model.'):
+                    new_key = key[6:]  # 去掉 'model.' 前缀
+                    model_state_dict[new_key] = value
+            if model_state_dict:
+                missing, unexpected = pipeline.model.load_state_dict(model_state_dict, strict=False)
+                logger.info(f"✅ DiT 模型权重加载完成: {len(model_state_dict)} 个权重")
+                if missing:
+                    logger.warning(f"  - Missing keys: {len(missing)}")
+                if unexpected:
+                    logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 加载 VAE 权重
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            vae_state_dict = {}
+            for key, value in state_dict.items():
+                if key.startswith('first_stage_model.'):
+                    new_key = key[19:]  # 去掉 'first_stage_model.' 前缀
+                    vae_state_dict[new_key] = value
+            if vae_state_dict:
+                missing, unexpected = pipeline.vae.load_state_dict(vae_state_dict, strict=False)
+                logger.info(f"✅ VAE 权重加载完成: {len(vae_state_dict)} 个权重")
+                if missing:
+                    logger.warning(f"  - Missing keys: {len(missing)}")
+                if unexpected:
+                    logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 加载 Conditioner 权重
+        if hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+            conditioner_state_dict = {}
+            for key, value in state_dict.items():
+                if key.startswith('cond_stage_model.'):
+                    new_key = key[18:]  # 去掉 'cond_stage_model.' 前缀
+                    conditioner_state_dict[new_key] = value
+            if conditioner_state_dict:
+                missing, unexpected = pipeline.conditioner.load_state_dict(conditioner_state_dict, strict=False)
+                logger.info(f"✅ Conditioner 权重加载完成: {len(conditioner_state_dict)} 个权重")
+                if missing:
+                    logger.warning(f"  - Missing keys: {len(missing)}")
+                if unexpected:
+                    logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 加载 ControlNet 权重（如果存在）
+        if hasattr(pipeline, 'controlnet') and pipeline.controlnet is not None:
+            controlnet_state_dict = {}
+            for key, value in state_dict.items():
+                if key.startswith('controlnet.'):
+                    new_key = key[11:]  # 去掉 'controlnet.' 前缀
+                    controlnet_state_dict[new_key] = value
+            if controlnet_state_dict:
+                missing, unexpected = pipeline.controlnet.load_state_dict(controlnet_state_dict, strict=False)
+                logger.info(f"✅ ControlNet 权重加载完成: {len(controlnet_state_dict)} 个权重")
+                if missing:
+                    logger.warning(f"  - Missing keys: {len(missing)}")
+                if unexpected:
+                    logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 如果提供了 LoRA 路径，加载 LoRA 权重
+        if lora_path and os.path.exists(lora_path):
+            cls._load_lora_weights(pipeline, lora_path, device, dtype)
+        
+        return pipeline
+    
+    @classmethod
+    def _load_from_inference_checkpoint(
+        cls,
+        ckpt,
+        config,
+        device='cuda',
+        dtype=torch.float16,
+        lora_path=None,
+        **kwargs,
+    ):
+        """从推理格式 checkpoint 加载模型"""
+        # 修复配置文件中的模块路径
+        def fix_config_module_path(cfg, depth=0):
+            if depth > 10:
+                return
+            if isinstance(cfg, dict):
+                if 'target' in cfg:
+                    original_target = cfg['target']
+                    if 'hy3dgen' in original_target:
+                        cfg['target'] = original_target.replace('hy3dgen.shapegen', 'hy3dshape')
+                        cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
+                        logger.info(f"修复模块路径: {original_target} -> {cfg['target']}")
+                for key, value in cfg.items():
+                    if isinstance(value, (dict, list)):
+                        fix_config_module_path(value, depth + 1)
+            elif isinstance(cfg, list):
+                for item in cfg:
+                    if isinstance(item, (dict, list)):
+                        fix_config_module_path(item, depth + 1)
+        
+        fix_config_module_path(config)
+        
+        # 对于推理格式 checkpoint，移除 from_pretrained，直接使用 checkpoint 中的权重
+        def remove_from_pretrained(cfg, depth=0, path=""):
+            if depth > 10:
+                return 0
+            removed_count = 0
+            if isinstance(cfg, dict):
+                if 'from_pretrained' in cfg:
+                    original_from_pretrained = cfg.pop('from_pretrained')
+                    logger.info(f"推理格式 checkpoint: 移除 {path}.from_pretrained = {original_from_pretrained}")
+                    removed_count += 1
+                for key, value in cfg.items():
+                    if isinstance(value, (dict, list)):
+                        new_path = f"{path}.{key}" if path else key
+                        removed_count += remove_from_pretrained(value, depth + 1, new_path)
+            elif isinstance(cfg, list):
+                for idx, item in enumerate(cfg):
+                    if isinstance(item, (dict, list)):
+                        new_path = f"{path}[{idx}]" if path else f"[{idx}]"
+                        removed_count += remove_from_pretrained(item, depth + 1, new_path)
+            return removed_count
+        
+        removed = remove_from_pretrained(config)
+        if removed > 0:
+            logger.info(f"✅ 已移除 {removed} 个 from_pretrained 配置，将直接从 checkpoint 加载完整模型权重")
+        
+        # 实例化 pipeline
+        pipeline = cls._instantiate_from_config(config, device, dtype, **kwargs)
+        
+        # 加载权重
+        logger.info("正在从推理格式 checkpoint 加载权重...")
+        
+        # 加载 model (DiT) 权重
+        if 'model' in ckpt and hasattr(pipeline, 'model') and pipeline.model is not None:
+            missing, unexpected = pipeline.model.load_state_dict(ckpt['model'], strict=False)
+            logger.info(f"✅ DiT 模型权重加载完成: {len(ckpt['model'])} 个权重")
+            if missing:
+                logger.warning(f"  - Missing keys: {len(missing)}")
+            if unexpected:
+                logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 加载 VAE 权重
+        if 'vae' in ckpt and hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            missing, unexpected = pipeline.vae.load_state_dict(ckpt['vae'], strict=False)
+            logger.info(f"✅ VAE 权重加载完成: {len(ckpt['vae'])} 个权重")
+            if missing:
+                logger.warning(f"  - Missing keys: {len(missing)}")
+            if unexpected:
+                logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 加载 Conditioner 权重
+        if 'conditioner' in ckpt and hasattr(pipeline, 'conditioner') and pipeline.conditioner is not None:
+            missing, unexpected = pipeline.conditioner.load_state_dict(ckpt['conditioner'], strict=False)
+            logger.info(f"✅ Conditioner 权重加载完成: {len(ckpt['conditioner'])} 个权重")
+            if missing:
+                logger.warning(f"  - Missing keys: {len(missing)}")
+            if unexpected:
+                logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 加载 ControlNet 权重（如果存在）
+        if 'controlnet' in ckpt and hasattr(pipeline, 'controlnet') and pipeline.controlnet is not None:
+            missing, unexpected = pipeline.controlnet.load_state_dict(ckpt['controlnet'], strict=False)
+            logger.info(f"✅ ControlNet 权重加载完成: {len(ckpt['controlnet'])} 个权重")
+            if missing:
+                logger.warning(f"  - Missing keys: {len(missing)}")
+            if unexpected:
+                logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+        
+        # 如果提供了 LoRA 路径，加载 LoRA 权重
+        if lora_path and os.path.exists(lora_path):
+            cls._load_lora_weights(pipeline, lora_path, device, dtype)
+        
+        return pipeline
+    
+    @classmethod
+    def _instantiate_from_config(cls, config, device, dtype, **kwargs):
+        """从配置实例化 pipeline"""
+        # 修复配置中的模块路径
+        def fix_config_module_path(cfg, depth=0):
+            if depth > 10:
+                return
+            if isinstance(cfg, dict):
+                if 'target' in cfg:
+                    original_target = cfg['target']
+                    if 'hy3dgen' in original_target:
+                        cfg['target'] = original_target.replace('hy3dgen.shapegen', 'hy3dshape')
+                        cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
+                for key, value in cfg.items():
+                    if isinstance(value, (dict, list)):
+                        fix_config_module_path(value, depth + 1)
+            elif isinstance(cfg, list):
+                for item in cfg:
+                    if isinstance(item, (dict, list)):
+                        fix_config_module_path(item, depth + 1)
+        
+        fix_config_module_path(config)
+        
+        # 实例化各个组件
         model = instantiate_from_config(config['model'])
-        model.load_state_dict(ckpt['model'])
-        vae = instantiate_from_config(config['vae'])
-        vae.load_state_dict(ckpt['vae'], strict=False)
-        conditioner = instantiate_from_config(config['conditioner'])
-        if 'conditioner' in ckpt:
-            conditioner.load_state_dict(ckpt['conditioner'])
+        
+        # VAE
+        vae_config = config['vae']
+        params = vae_config.get("params", dict())
+        has_from_pretrained = vae_config.get("from_pretrained", None) is not None
+        required_params = ['num_latents', 'embed_dim', 'width', 'heads', 'num_decoder_layers']
+        has_complete_params = params and len(params) > 0 and all(p in params for p in required_params)
+        
+        if has_complete_params:
+            vae = instantiate_from_config(vae_config)
+        elif has_from_pretrained:
+            from_pretrained_kwargs = {
+                'use_safetensors': vae_config.get('use_safetensors', False),
+                'variant': vae_config.get('variant', 'fp16'),
+                'device': device,
+                'dtype': dtype,
+            }
+            if 'subfolder' in vae_config:
+                from_pretrained_kwargs['subfolder'] = vae_config['subfolder']
+            from_pretrained_kwargs.update(params)
+            cls_vae = get_obj_from_str(vae_config["target"])
+            vae = cls_vae.from_pretrained(
+                vae_config["from_pretrained"], 
+                **from_pretrained_kwargs
+            )
+        else:
+            vae = instantiate_from_config(vae_config)
+        
+        # Conditioner
+        conditioner_config = config['conditioner']
+        conditioner_params = conditioner_config.get("params", dict())
+        if 'main_image_encoder' not in conditioner_params:
+            logger.warning("Conditioner config missing 'main_image_encoder', attempting to use default DinoImageEncoderMV...")
+            if 'params' not in conditioner_config:
+                conditioner_config['params'] = {}
+            conditioner_config['params']['main_image_encoder'] = {
+                'type': 'DinoImageEncoderMV',
+                'kwargs': {
+                    'version': 'facebook/dinov2-large',
+                    'image_size': 518,
+                    'use_cls_token': True,
+                    'view_num': 4
+                }
+            }
+        conditioner = instantiate_from_config(conditioner_config)
+        
+        # Image processor
         image_processor = instantiate_from_config(config['image_processor'])
+        
+        # Scheduler
         scheduler = instantiate_from_config(config['scheduler'])
-
+        
         model_kwargs = dict(
             vae=vae,
             model=model,
@@ -219,10 +567,84 @@ class Hunyuan3DDiTPipeline:
             dtype=dtype,
         )
         model_kwargs.update(kwargs)
-
-        return cls(
-            **model_kwargs
-        )
+        
+        return cls(**model_kwargs)
+    
+    @classmethod
+    def _load_lora_weights(cls, pipeline, lora_path, device='cuda', dtype=torch.float16):
+        """从单独路径加载 LoRA 权重"""
+        import torch
+        import os
+        
+        logger.info(f"正在从单独路径加载 LoRA 权重: {lora_path}")
+        
+        if not os.path.exists(lora_path):
+            logger.warning(f"LoRA 路径不存在: {lora_path}")
+            return
+        
+        try:
+            # 检查是否是 Lightning checkpoint 格式
+            if lora_path.endswith('.ckpt'):
+                ckpt = torch.load(lora_path, map_location='cpu')
+                if 'state_dict' in ckpt:
+                    state_dict = ckpt['state_dict']
+                    # 提取 LoRA 权重
+                    lora_state_dict = {}
+                    for key, value in state_dict.items():
+                        if 'lora' in key.lower():
+                            # 如果是 model.lora_xxx 格式，去掉 model. 前缀
+                            if key.startswith('model.'):
+                                new_key = key[6:]
+                            else:
+                                new_key = key
+                            lora_state_dict[new_key] = value
+                    
+                    if lora_state_dict:
+                        # 检查是否需要应用 LoRA 配置
+                        if hasattr(pipeline, 'model') and pipeline.model is not None:
+                            # 检查模型是否已经是 PeftModel
+                            from peft import PeftModel, LoraConfig, get_peft_model
+                            
+                            if not isinstance(pipeline.model, PeftModel):
+                                # 如果不是 PeftModel，先应用 LoRA 配置
+                                logger.info("模型不是 PeftModel，正在应用 LoRA 配置...")
+                                lora_config = LoraConfig(
+                                    r=8,
+                                    lora_alpha=8,
+                                    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                    lora_dropout=0.0,
+                                )
+                                pipeline.model = get_peft_model(pipeline.model, lora_config)
+                                logger.info("✅ LoRA 配置已应用")
+                            
+                            # 加载 LoRA 权重
+                            missing, unexpected = pipeline.model.load_state_dict(lora_state_dict, strict=False)
+                            logger.info(f"✅ LoRA 权重加载完成: {len(lora_state_dict)} 个权重")
+                            if missing:
+                                logger.warning(f"  - Missing keys: {len(missing)}")
+                            if unexpected:
+                                logger.warning(f"  - Unexpected keys: {len(unexpected)}")
+                        else:
+                            logger.warning("Pipeline 中没有 model，无法加载 LoRA 权重")
+                    else:
+                        logger.warning(f"在 {lora_path} 中未找到 LoRA 权重")
+                else:
+                    logger.warning(f"{lora_path} 不是有效的 Lightning checkpoint 格式")
+            else:
+                # 尝试作为标准 PEFT 格式加载
+                try:
+                    from peft import PeftModel
+                    if hasattr(pipeline, 'model') and pipeline.model is not None:
+                        pipeline.model = PeftModel.from_pretrained(pipeline.model, lora_path)
+                        logger.info(f"✅ 从 PEFT 格式加载 LoRA 权重: {lora_path}")
+                    else:
+                        logger.warning("Pipeline 中没有 model，无法加载 LoRA 权重")
+                except Exception as e:
+                    logger.error(f"无法从 {lora_path} 加载 LoRA 权重: {e}")
+        except Exception as e:
+            logger.error(f"加载 LoRA 权重时出错: {e}")
+            import traceback
+            traceback.print_exc()
 
     @classmethod
     def from_pretrained(
