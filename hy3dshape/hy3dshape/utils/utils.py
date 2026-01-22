@@ -94,7 +94,16 @@ def smart_load_model(
 ):
     original_model_path = model_path
     # try local path
-    base_dir = os.environ.get('HY3DGEN_MODELS', '~/.cache/hy3dgen')
+    # 优先使用 HF_HOME 或 HUGGINGFACE_HUB_CACHE，然后是 HY3DGEN_MODELS，最后是默认值
+    base_dir = (
+        os.environ.get('HF_HOME') or 
+        os.environ.get('HUGGINGFACE_HUB_CACHE') or 
+        os.environ.get('HY3DGEN_MODELS') or 
+        '~/.cache/hy3dgen'
+    )
+    # 如果使用 HF_HOME，需要添加 hy3dgen 子目录
+    if base_dir in (os.environ.get('HF_HOME', ''), os.environ.get('HUGGINGFACE_HUB_CACHE', '')):
+        base_dir = os.path.join(base_dir, 'hy3dgen')
     model_fld = os.path.expanduser(os.path.join(base_dir, model_path))
     model_path = os.path.expanduser(os.path.join(base_dir, model_path, subfolder))
     logger.info(f'Try to load model from local path: {model_path}')
