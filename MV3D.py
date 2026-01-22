@@ -49,10 +49,10 @@ def load_multiview_images(image_dir):
     
     # 图片文件名映射
     image_files = {
-        'front': image_dir / '001.jpg',
-        'left': image_dir / '002.jpg',
-        'back': image_dir / '003.jpg',
-        'right': image_dir / '004.jpg',
+        'front': image_dir / '000.jpg',
+        'left': image_dir / '001.jpg',
+        'back': image_dir / '002.jpg',
+        'right': image_dir / '003.jpg',
     }
     
     images = {}
@@ -451,7 +451,7 @@ def main():
     )
     
     parser.add_argument('--file', type=str, required=True,
-                       help='输入图片文件夹路径（包含001.jpg, 002.jpg, 003.jpg, 004.jpg）')
+                       help='输入图片文件夹路径（包含000.jpg, 001.jpg, 002.jpg, 003.jpg）')
     parser.add_argument('--output', type=str, default='output.obj',
                        help='输出OBJ文件路径（默认: output.obj）')
     parser.add_argument('--device', type=str, default='cuda',
