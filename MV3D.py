@@ -34,7 +34,7 @@ from hy3dshape.models.conditioner import DinoImageEncoderMV
 
 def load_multiview_images(image_dir):
     """
-    从文件夹加载4张图片：001.jpg, 002.jpg, 003.jpg, 004.jpg
+    从文件夹加载4张图片：001.png, 002.png, 003.png, 004.png
     映射到：front, left, back, right
     
     Args:
@@ -49,10 +49,10 @@ def load_multiview_images(image_dir):
     
     # 图片文件名映射
     image_files = {
-        'front': image_dir / '000.jpg',
-        'left': image_dir / '001.jpg',
-        'back': image_dir / '002.jpg',
-        'right': image_dir / '003.jpg',
+        'front': image_dir / '000.png',
+        'left': image_dir / '001.png',
+        'back': image_dir / '002.png',
+        'right': image_dir / '003.png',
     }
     
     images = {}
@@ -451,7 +451,7 @@ def main():
     )
     
     parser.add_argument('--file', type=str, required=True,
-                       help='输入图片文件夹路径（包含000.jpg, 001.jpg, 002.jpg, 003.jpg）')
+                       help='输入图片文件夹路径（包含000.png, 001.png, 002.png, 003.png）')
     parser.add_argument('--output', type=str, default='output.obj',
                        help='输出OBJ文件路径（默认: output.obj）')
     parser.add_argument('--device', type=str, default='cuda',
