@@ -1,0 +1,60 @@
+# 忽略 docker 文件夹
+docker/
+
+# Python 相关
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 虚拟环境
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# 缓存和临时文件
+.cache/
+*.log
+*.tmp
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# 输出和生成文件
+save_dir/
+gradio_cache/
+hf_cache/
+weights/
+lora_checkpoints/
+
+# 测试相关
+test/
+*.test
+.pytest_cache/
+
+# 文档
+*.md
+!README.md
