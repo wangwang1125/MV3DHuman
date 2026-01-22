@@ -2390,6 +2390,28 @@ if __name__ == '__main__':
                                 print("\n检测到全量微调格式checkpoint，加载完整模型权重...")
                                 if hasattr(i23d_worker, 'model'):
                                     try:
+                                        # 检查模型的input_size是否与checkpoint匹配
+                                        if hasattr(i23d_worker.model, 'input_size'):
+                                            model_input_size = i23d_worker.model.input_size
+                                            print(f"  当前模型 input_size: {model_input_size}")
+                                            
+                                            # 从checkpoint中推断input_size（通过检查权重形状）
+                                            # 通常可以通过检查 x_embedder.pos_embed 的形状来推断
+                                            sample_key = None
+                                            for key in state_dict.keys():
+                                                if key.startswith('model.') and 'pos_embed' in key:
+                                                    sample_key = key
+                                                    break
+                                            
+                                            if sample_key:
+                                                ckpt_input_size = state_dict[sample_key].shape[1] if len(state_dict[sample_key].shape) > 1 else None
+                                                if ckpt_input_size and ckpt_input_size != model_input_size:
+                                                    print(f"  ⚠️  警告: checkpoint的input_size ({ckpt_input_size}) 与当前模型的input_size ({model_input_size}) 不匹配")
+                                                    print(f"  这通常意味着checkpoint是基于不同的预训练模型训练的")
+                                                    print(f"  如果训练时使用的是 hunyuandit-multiview-rgb-finetuning-flowmatching-dinol518-bf16-lr1e5-4096-mv.yaml")
+                                                    print(f"  该配置使用 tencent/Hunyuan3D-2mv (input_size=4096)")
+                                                    print(f"  请确保启动脚本使用 --model_path tencent/Hunyuan3D-2mv --subfolder hunyuan3d-dit-v2-mv")
+                                        
                                         # 提取model相关的权重（完整权重，不含LoRA）
                                         model_state_dict = {}
                                         for key, value in state_dict.items():
@@ -2405,6 +2427,20 @@ if __name__ == '__main__':
                                         print(f"  - Unexpected keys: {len(unexpected)}")
                                         success_count += 1
                                         
+                                    except RuntimeError as e:
+                                        error_msg = str(e)
+                                        if "size mismatch" in error_msg.lower():
+                                            print(f"❌ 全量微调权重加载失败: 参数形状不匹配")
+                                            print(f"  错误信息: {error_msg[:500]}")  # 只显示前500个字符
+                                            print(f"  这通常意味着checkpoint是基于不同的预训练模型训练的")
+                                            print(f"  如果训练时使用的是 hunyuandit-multiview-rgb-finetuning-flowmatching-dinol518-bf16-lr1e5-4096-mv.yaml")
+                                            print(f"  该配置使用 tencent/Hunyuan3D-2mv (input_size=4096)")
+                                            print(f"  请确保启动脚本使用 --model_path tencent/Hunyuan3D-2mv --subfolder hunyuan3d-dit-v2-mv")
+                                            print(f"  或者使用 start_multiview_rgb_gradio_mv.sh 脚本")
+                                        else:
+                                            print(f"❌ 全量微调权重加载失败: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                     except Exception as e:
                                         print(f"❌ 全量微调权重加载失败: {e}")
                                         import traceback

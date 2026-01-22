@@ -95,21 +95,43 @@ def initialize_model(model_path, subfolder, device, num_views=4, low_vram=False,
     print(f"  设备: {device}")
     print(f"  视图数量: {num_views}")
     
+    # 检测是否是Hunyuan3D-2mv模型（需要使用safetensors格式）
+    is_mv_model = 'Hunyuan3D-2mv' in model_path or 'mv' in model_path.lower() or 'hunyuan3d-dit-v2-mv' in subfolder
+    use_safetensors = is_mv_model
+    
+    if is_mv_model:
+        print(f"  检测到Hunyuan3D-2mv模型，使用safetensors格式")
+    
     # 加载模型
-    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        model_path,
-        subfolder=subfolder,
-        use_safetensors=False,
-        device=device,
-    )
+    try:
+        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            model_path,
+            subfolder=subfolder,
+            use_safetensors=use_safetensors,
+            device=device,
+        )
+        if use_safetensors:
+            print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型成功")
+    except Exception as e:
+        # 如果safetensors加载失败，尝试ckpt格式
+        if use_safetensors:
+            print(f"⚠️ 使用safetensors加载失败，尝试ckpt格式: {e}")
+            pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                model_path,
+                subfolder=subfolder,
+                use_safetensors=False,
+                device=device,
+            )
+            print("✅ 使用ckpt格式加载模型成功")
+        else:
+            raise
     
     # 自动搜索checkpoint（如果未指定）
     if rgb_lora_path is None:
+        # 优先查找mv版本的checkpoint（与训练配置匹配）
         default_lora_dirs = [
-            "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
-            "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
-            "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints",
-            "./output_folder/dit/multiview_rgb_lora_checkpoints",
+            # mv版本的checkpoint路径（优先）
+            "./hy3dshape/output_folder/dit/multiview_rgb_finetuning_mv/ckpt",
         ]
         
         for lora_dir in default_lora_dirs:
@@ -199,6 +221,28 @@ def initialize_model(model_path, subfolder, device, num_views=4, low_vram=False,
                         print("\n检测到全量微调格式checkpoint，加载完整模型权重...")
                         if hasattr(pipeline, 'model'):
                             try:
+                                # 检查模型的input_size是否与checkpoint匹配
+                                if hasattr(pipeline.model, 'input_size'):
+                                    model_input_size = pipeline.model.input_size
+                                    print(f"  当前模型 input_size: {model_input_size}")
+                                    
+                                    # 从checkpoint中推断input_size（通过检查权重形状）
+                                    # 通常可以通过检查 x_embedder.pos_embed 的形状来推断
+                                    sample_key = None
+                                    for key in state_dict.keys():
+                                        if key.startswith('model.') and 'pos_embed' in key:
+                                            sample_key = key
+                                            break
+                                    
+                                    if sample_key:
+                                        ckpt_input_size = state_dict[sample_key].shape[1] if len(state_dict[sample_key].shape) > 1 else None
+                                        if ckpt_input_size and ckpt_input_size != model_input_size:
+                                            print(f"  ⚠️  警告: checkpoint的input_size ({ckpt_input_size}) 与当前模型的input_size ({model_input_size}) 不匹配")
+                                            print(f"  这通常意味着checkpoint是基于不同的预训练模型训练的")
+                                            print(f"  如果训练时使用的是 hunyuandit-multiview-rgb-finetuning-flowmatching-dinol518-bf16-lr1e5-4096-mv.yaml")
+                                            print(f"  该配置使用 tencent/Hunyuan3D-2mv (input_size=4096)")
+                                            print(f"  请确保使用 --model_path tencent/Hunyuan3D-2mv --subfolder hunyuan3d-dit-v2-mv")
+                                
                                 # 提取model相关的权重（完整权重，不含LoRA）
                                 model_state_dict = {}
                                 for key, value in state_dict.items():
@@ -214,6 +258,19 @@ def initialize_model(model_path, subfolder, device, num_views=4, low_vram=False,
                                 print(f"  - Unexpected keys: {len(unexpected)}")
                                 success_count += 1
                                 
+                            except RuntimeError as e:
+                                error_msg = str(e)
+                                if "size mismatch" in error_msg.lower():
+                                    print(f"❌ 全量微调权重加载失败: 参数形状不匹配")
+                                    print(f"  错误信息: {error_msg[:500]}")  # 只显示前500个字符
+                                    print(f"  这通常意味着checkpoint是基于不同的预训练模型训练的")
+                                    print(f"  如果训练时使用的是 hunyuandit-multiview-rgb-finetuning-flowmatching-dinol518-bf16-lr1e5-4096-mv.yaml")
+                                    print(f"  该配置使用 tencent/Hunyuan3D-2mv (input_size=4096)")
+                                    print(f"  请确保使用 --model_path tencent/Hunyuan3D-2mv --subfolder hunyuan3d-dit-v2-mv")
+                                else:
+                                    print(f"❌ 全量微调权重加载失败: {e}")
+                                import traceback
+                                traceback.print_exc()
                             except Exception as e:
                                 print(f"❌ 全量微调权重加载失败: {e}")
                                 import traceback
