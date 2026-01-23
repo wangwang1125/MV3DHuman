@@ -12,20 +12,33 @@
 # fine-tuning enabling code and other elements of the foregoing made publicly available
 # by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
 
-# Import from hy3dshape.utils to maintain compatibility
+# Import from parent utils.py first (for logger, synchronize_timer, smart_load_model)
+# Use direct file import to avoid circular import
 import sys
 import os
+import importlib.util
 
-# Add parent directory to path to import from hy3dshape
+# Get parent utils.py path (one level up from utils/ directory)
+_parent_utils_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'utils.py')
+
+# Load parent utils.py as a module
+_spec = importlib.util.spec_from_file_location("_hy3dgen_shapegen_utils", _parent_utils_path)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Could not load utils.py from {_parent_utils_path}")
+_parent_utils_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_parent_utils_module)
+
+# Import from parent utils.py
+logger = _parent_utils_module.logger
+synchronize_timer = _parent_utils_module.synchronize_timer
+smart_load_model = _parent_utils_module.smart_load_model
+
+# Import from hy3dshape.utils for other utilities
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _hy3dshape_dir = os.path.join(_current_dir, '../../../../hy3dshape')
 if _hy3dshape_dir not in sys.path:
     sys.path.insert(0, _hy3dshape_dir)
 
-# Import from parent utils.py first (for logger, synchronize_timer, smart_load_model)
-from ..utils import logger, synchronize_timer, smart_load_model
-
-# Import from hy3dshape.utils for other utilities
 from hy3dshape.utils.misc import instantiate_from_config, get_obj_from_str
 
 # Also import trainings submodule
