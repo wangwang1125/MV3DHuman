@@ -41,8 +41,7 @@ if _hy3dshape_dir not in sys.path:
 
 from hy3dshape.utils.misc import instantiate_from_config, get_obj_from_str
 
-# Also import trainings submodule
-import hy3dshape.utils.trainings
-trainings = hy3dshape.utils.trainings
+# trainings submodule is now available as hy3dgen.shapegen.utils.trainings
+# (created as a separate package in utils/trainings/__init__.py)
 
-__all__ = ['instantiate_from_config', 'get_obj_from_str', 'smart_load_model', 'trainings', 'logger', 'synchronize_timer']
+__all__ = ['instantiate_from_config', 'get_obj_from_str', 'smart_load_model', 'logger', 'synchronize_timer']
