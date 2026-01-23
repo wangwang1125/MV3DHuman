@@ -1820,6 +1820,9 @@ if __name__ == '__main__':
         Returns:
             加载的 checkpoint 字典
         """
+        # 确保 torch 在函数作用域内可用
+        import torch
+        
         if weights_only_preferred:
             try:
                 return torch.load(file_path, map_location=map_location, weights_only=True)
