@@ -1804,7 +1804,44 @@ if __name__ == '__main__':
     parser.add_argument('--enable_multiview_rgb', action='store_true', help='Enable multi-view RGB reconstruction model (4 views, no normal maps)')
     parser.add_argument('--depth_lora_path', type=str, default="./hy3dshape/output_folder/dit/depth_lora_checkpoints/ckpt/ckpt-step=00000200.ckpt", help='Path to depth LoRA checkpoint')
     parser.add_argument('--normal_lora_path', type=str, default=None, help='Path to normal LoRA checkpoint')
-    parser.add_argument('--rgb_lora_path', type=str, default=None, help='Path to RGB LoRA checkpoint')
+    parser.add_argument('--rgb_lora_path', type=str, default=None, help='Path to RGB checkpoint (Lightning or inference format)')
+    parser.add_argument('--rgb_lora_path_separate', type=str, default=None, help='Path to separate RGB LoRA weights file (optional)')
+    
+    # 安全的 torch.load 辅助函数，处理 PosixPath 等问题
+    def safe_torch_load(file_path, map_location='cpu', weights_only_preferred=True):
+        """
+        安全地加载 PyTorch checkpoint，自动处理 PosixPath 等对象
+        
+        Args:
+            file_path: checkpoint 文件路径
+            map_location: 加载到哪个设备
+            weights_only_preferred: 是否优先使用 weights_only=True（更安全）
+        
+        Returns:
+            加载的 checkpoint 字典
+        """
+        if weights_only_preferred:
+            try:
+                return torch.load(file_path, map_location=map_location, weights_only=True)
+            except Exception as e:
+                # 如果 weights_only=True 失败，尝试添加安全全局变量
+                if 'PosixPath' in str(e) or 'pathlib' in str(e):
+                    try:
+                        from pathlib import PosixPath
+                        import torch.serialization
+                        torch.serialization.add_safe_globals([PosixPath])
+                        return torch.load(file_path, map_location=map_location, weights_only=True)
+                    except Exception as e2:
+                        # 如果还是失败，对于用户自己的训练结果，使用 weights_only=False
+                        print(f"⚠️  警告: 使用安全全局变量仍失败，使用 weights_only=False 加载（仅对可信的 checkpoint 使用）")
+                        return torch.load(file_path, map_location=map_location, weights_only=False)
+                else:
+                    # 其他错误，也尝试使用 weights_only=False
+                    print(f"⚠️  警告: weights_only=True 加载失败: {e}")
+                    print(f"   尝试使用 weights_only=False 加载（仅对可信的 checkpoint 使用）")
+                    return torch.load(file_path, map_location=map_location, weights_only=False)
+        else:
+            return torch.load(file_path, map_location=map_location, weights_only=False)
     parser.add_argument('--num_views', type=int, default=4, help='Number of views for multi-view model (default: 4)')
     parser.add_argument('--rembg_model', type=str, default='u2net_human_seg', 
                         choices=['u2net', 'u2netp', 'u2net_human_seg', 'silueta', 'isnet-general-use'],
@@ -1900,6 +1937,8 @@ if __name__ == '__main__':
     rmbg_worker = BackgroundRemover(model_name=args.rembg_model)
     
     # 根据是否启用深度模式、法线模式或RGB模式来加载模型
+    rgb_model_loaded = False  # 标记RGB模式是否已加载推理格式checkpoint
+    
     if DEPTH_MODE or MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
         if MULTIVIEW_RGB_MODE:
             print("正在加载多视图RGB重建模型...")
@@ -1929,55 +1968,191 @@ if __name__ == '__main__':
                         print(f"自动发现深度LoRA权重: {args.depth_lora_path}")
                         break
         
-        # 加载支持深度条件、法线条件或RGB重建的模型
-        # 如果使用Hunyuan3D-2mv，需要使用safetensors格式
-        use_safetensors = IS_MV_PRETRAINED  # mv模型使用safetensors
-        try:
-            if DEPTH_MODE:
-                # 深度模式需要load_depth参数
+        # 检查是否是推理格式的 checkpoint（可以直接用 from_single_file 加载）
+        inference_checkpoint_path = None
+        inference_config_path = None
+        
+        # 检查 depth_lora_path 是否是推理格式的 checkpoint
+        if args.depth_lora_path and os.path.exists(args.depth_lora_path):
+            # 如果是目录，查找 model.ckpt 和 config.yaml
+            if os.path.isdir(args.depth_lora_path):
+                ckpt_file = os.path.join(args.depth_lora_path, 'model.ckpt')
+                config_file = os.path.join(args.depth_lora_path, 'config.yaml')
+                if os.path.exists(ckpt_file):
+                    # 检查是否是推理格式
+                    try:
+                        test_ckpt = safe_torch_load(ckpt_file, map_location='cpu', weights_only_preferred=True)
+                        if 'model' in test_ckpt and 'vae' in test_ckpt and 'conditioner' in test_ckpt:
+                            inference_checkpoint_path = ckpt_file
+                            if os.path.exists(config_file):
+                                inference_config_path = config_file
+                            print(f"✅ 检测到推理格式的 checkpoint: {inference_checkpoint_path}")
+                    except Exception as e:
+                        print(f"检查 checkpoint 格式时出错: {e}")
+            # 如果是文件，直接检查
+            elif args.depth_lora_path.endswith('.ckpt'):
+                try:
+                    test_ckpt = safe_torch_load(args.depth_lora_path, map_location='cpu', weights_only_preferred=True)
+                    # 推理格式包含 'model', 'vae', 'conditioner' 键
+                    # Lightning 格式包含 'state_dict' 键
+                    if 'model' in test_ckpt and 'vae' in test_ckpt and 'conditioner' in test_ckpt and 'state_dict' not in test_ckpt:
+                        inference_checkpoint_path = args.depth_lora_path
+                        # 尝试在同一目录下查找 config.yaml
+                        config_file = os.path.join(os.path.dirname(args.depth_lora_path), 'config.yaml')
+                        if os.path.exists(config_file):
+                            inference_config_path = config_file
+                        print(f"✅ 检测到推理格式的 checkpoint: {inference_checkpoint_path}")
+                except Exception as e:
+                    print(f"检查 checkpoint 格式时出错: {e}")
+        
+        # 如果检测到推理格式的 checkpoint，直接加载
+        if inference_checkpoint_path:
+            try:
+                print(f"正在从推理格式 checkpoint 加载模型: {inference_checkpoint_path}")
+                if inference_config_path:
+                    # 先检查是否是 LoRA checkpoint
+                    ckpt = safe_torch_load(inference_checkpoint_path, map_location='cpu', weights_only_preferred=True)
+                    is_lora = ckpt.get('_is_lora', False)
+                    
+                    if is_lora:
+                        print("检测到 LoRA checkpoint，需要先加载基础模型...")
+                        # 对于 LoRA，需要先加载基础模型，然后应用 LoRA
+                        # 先加载基础模型
+                        i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                            args.model_path,
+                            subfolder=args.subfolder,
+                            use_safetensors=IS_MV_PRETRAINED,
+                            device=args.device,
+                        )
+                        print("✅ 基础模型加载完成")
+                        
+                        # 应用 LoRA 配置
+                        lora_config_dict = ckpt.get('_lora_config', {})
+                        if lora_config_dict:
+                            try:
+                                from peft import LoraConfig, get_peft_model
+                                # 从保存的配置中恢复 LoRA 配置
+                                # 假设配置格式为 {'default': {...}} 或直接是配置字典
+                                if 'default' in lora_config_dict:
+                                    lora_params = lora_config_dict['default']
+                                else:
+                                    lora_params = lora_config_dict
+                                
+                                lora_config = LoraConfig(
+                                    r=lora_params.get('r', 8),
+                                    lora_alpha=lora_params.get('lora_alpha', 8),
+                                    target_modules=lora_params.get('target_modules', ["to_q", "to_k", "to_v", "to_out.0"]),
+                                    lora_dropout=lora_params.get('lora_dropout', 0.0),
+                                )
+                                i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
+                                print("✅ LoRA 配置已应用")
+                            except Exception as e:
+                                print(f"⚠️ 应用 LoRA 配置失败: {e}")
+                                print("将尝试直接加载权重...")
+                        
+                        # 加载包含 LoRA 的权重
+                        if 'model' in ckpt:
+                            missing, unexpected = i23d_worker.model.load_state_dict(ckpt['model'], strict=False)
+                            print(f"✅ LoRA 权重加载完成")
+                            print(f"  - Missing keys: {len(missing)}")
+                            print(f"  - Unexpected keys: {len(unexpected)}")
+                    else:
+                        # 非 LoRA，直接使用 from_single_file
+                        i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_single_file(
+                            inference_checkpoint_path,
+                            inference_config_path,
+                            device=args.device,
+                            dtype=torch.float16,
+                            use_safetensors=False,
+                        )
+                        print("✅ 成功从推理格式 checkpoint 加载模型")
+                    
+                    # 检查是否需要设置 ControlNet（如果 checkpoint 中包含）
+                    if 'controlnet' in ckpt:
+                        print("检测到 ControlNet 权重，正在加载...")
+                        if hasattr(i23d_worker, 'controlnet') and i23d_worker.controlnet is not None:
+                            missing, unexpected = i23d_worker.controlnet.load_state_dict(ckpt['controlnet'], strict=False)
+                            print(f"✅ ControlNet 权重加载完成")
+                            print(f"  - Missing keys: {len(missing)}")
+                            print(f"  - Unexpected keys: {len(unexpected)}")
+                        else:
+                            print("⚠️ Pipeline 中没有 ControlNet，无法加载 ControlNet 权重")
+                    
+                    # 跳过后续的 LoRA 加载逻辑
+                    args.depth_lora_path = None
+                else:
+                    print("⚠️ 未找到 config.yaml，无法使用 from_single_file 加载")
+                    print("将回退到标准加载方式")
+                    inference_checkpoint_path = None
+            except Exception as e:
+                print(f"❌ 从推理格式 checkpoint 加载失败: {e}")
+                import traceback
+                traceback.print_exc()
+                print("将回退到标准加载方式")
+                inference_checkpoint_path = None
+        
+        # 如果没有使用推理格式 checkpoint，使用标准加载方式
+        if not inference_checkpoint_path:
+            # 加载支持深度条件、法线条件的模型
+            # RGB模式如果已经加载了推理格式checkpoint，则跳过
+            # 如果使用Hunyuan3D-2mv，需要使用safetensors格式
+            use_safetensors = IS_MV_PRETRAINED  # mv模型使用safetensors
+            try:
+                if DEPTH_MODE:
+                    # 深度模式需要load_depth参数
+                    i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                        args.model_path,
+                        subfolder=args.subfolder,
+                        use_safetensors=use_safetensors,
+                        device=args.device,
+                        # 这些参数可能需要根据实际的pipeline实现调整
+                        load_depth=True,  # 启用深度图支持
+                        control_in_channels=1,  # 深度图单通道
+                    )
+                    if use_safetensors:
+                        print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型（深度模式）")
+                elif MULTIVIEW_NORMAL_MODE:
+                    # 法线模式不需要load_depth，直接加载标准模型
+                    i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                        args.model_path,
+                        subfolder=args.subfolder,
+                        use_safetensors=use_safetensors,
+                        device=args.device,
+                    )
+                    if use_safetensors:
+                        print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
+                elif MULTIVIEW_RGB_MODE and not rgb_model_loaded:
+                    # RGB模式：如果没有加载推理格式checkpoint，使用基础模型
+                    i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                        args.model_path,
+                        subfolder=args.subfolder,
+                        use_safetensors=use_safetensors,
+                        device=args.device,
+                    )
+                    if use_safetensors:
+                        print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
+                else:
+                    # 其他情况加载标准模型
+                    # 如果使用Hunyuan3D-2mv，需要使用safetensors格式
+                    use_safetensors = IS_MV_PRETRAINED  # mv模型使用safetensors
+                    i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                        args.model_path,
+                        subfolder=args.subfolder,
+                        use_safetensors=use_safetensors,
+                        device=args.device,
+                    )
+                    if use_safetensors:
+                        print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
+            except Exception as e:
+                print(f"加载模型失败，回退到标准模型: {e}")
                 i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     args.model_path,
                     subfolder=args.subfolder,
                     use_safetensors=use_safetensors,
                     device=args.device,
-                    # 这些参数可能需要根据实际的pipeline实现调整
-                    load_depth=True,  # 启用深度图支持
-                    control_in_channels=1,  # 深度图单通道
                 )
                 if use_safetensors:
-                    print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型（深度模式）")
-            elif MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
-                # 法线模式和RGB模式不需要load_depth，直接加载标准模型
-                i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                    args.model_path,
-                    subfolder=args.subfolder,
-                    use_safetensors=use_safetensors,
-                    device=args.device,
-                )
-                if use_safetensors:
-                    print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
-            else:
-                # 其他情况加载标准模型
-                # 如果使用Hunyuan3D-2mv，需要使用safetensors格式
-                use_safetensors = IS_MV_PRETRAINED  # mv模型使用safetensors
-                i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                    args.model_path,
-                    subfolder=args.subfolder,
-                    use_safetensors=use_safetensors,
-                    device=args.device,
-                )
-                if use_safetensors:
-                    print("✅ 使用safetensors格式加载Hunyuan3D-2mv模型")
-        except Exception as e:
-            print(f"加载模型失败，回退到标准模型: {e}")
-            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                args.model_path,
-                subfolder=args.subfolder,
-                use_safetensors=use_safetensors,
-                device=args.device,
-            )
-            if use_safetensors:
-                print("✅ 回退到标准模型（使用safetensors格式）")
+                    print("✅ 回退到标准模型（使用safetensors格式）")
         
         # 如果提供了 LoRA 路径，则加载 LoRA 权重
         if args.depth_lora_path and os.path.exists(args.depth_lora_path):
@@ -1994,7 +2169,7 @@ if __name__ == '__main__':
                 # 检查是否是Lightning checkpoint格式 (.ckpt)
                 if args.depth_lora_path.endswith('.ckpt'):
                     print("检测到Lightning checkpoint格式，加载LoRA和ControlNet权重...")
-                    ckpt = torch.load(args.depth_lora_path, map_location='cpu')
+                    ckpt = safe_torch_load(args.depth_lora_path, map_location='cpu', weights_only_preferred=False)
                     
                     if 'state_dict' in ckpt:
                         state_dict = ckpt['state_dict']
@@ -2203,7 +2378,7 @@ if __name__ == '__main__':
                     # 检查是否是Lightning checkpoint格式 (.ckpt)
                     if args.normal_lora_path.endswith('.ckpt'):
                         print("检测到Lightning checkpoint格式，加载法线LoRA权重...")
-                        ckpt = torch.load(args.normal_lora_path, map_location='cpu')
+                        ckpt = safe_torch_load(args.normal_lora_path, map_location='cpu', weights_only_preferred=False)
                         
                         if 'state_dict' in ckpt:
                             state_dict = ckpt['state_dict']
@@ -2292,167 +2467,219 @@ if __name__ == '__main__':
                     print(f"法线 LoRA 路径不存在: {args.normal_lora_path}")
                 print("使用基础法线条件模型（未加载LoRA权重）")
         
-        # 处理多视图RGB模式的LoRA权重加载
+        # 处理多视图RGB模式：支持 Lightning checkpoint 和推理格式 checkpoint
         if MULTIVIEW_RGB_MODE:
-            # 自动寻找RGB LoRA权重路径（如果未指定）
-            if args.rgb_lora_path is None:
-                default_lora_dirs = [
-                    # mv版本的checkpoint路径（优先）
-                    "./hy3dshape/output_folder/dit/multiview_rgb_finetuning_mv/ckpt",
-                    "./output_folder/dit/multiview_rgb_finetuning_mv/ckpt",
-                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning_mv/ckpt",
-                    "./output_folder/dit/multiview_rgb_lora_finetuning_mv/ckpt",
-                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints_mv",
-                    "./output_folder/dit/multiview_rgb_lora_checkpoints_mv",
-                    # 原始版本的checkpoint路径（向后兼容）
-                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
-                    "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt",
-                    "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints",
-                    "./output_folder/dit/multiview_rgb_lora_checkpoints",
-                ]
-                
-                for lora_dir in default_lora_dirs:
-                    if os.path.exists(lora_dir):
-                        # 如果是目录，查找.ckpt文件
-                        if os.path.isdir(lora_dir):
-                            ckpt_files = [f for f in os.listdir(lora_dir) if f.endswith('.ckpt')]
-                            if ckpt_files:
-                                # 按文件名排序，选择最新的（步数最大的）
-                                latest_ckpt = max(ckpt_files, key=lambda x: int(x.split('=')[1].split('.')[0]) if '=' in x else 0)
-                                args.rgb_lora_path = os.path.join(lora_dir, latest_ckpt)
-                                print(f"自动发现RGB LoRA权重: {args.rgb_lora_path}")
-                                break
-                        else:
-                            args.rgb_lora_path = lora_dir
-                            break
-            
-            # 如果提供了RGB LoRA路径，则加载LoRA权重
             if args.rgb_lora_path and os.path.exists(args.rgb_lora_path):
-                print(f"正在加载RGB LoRA 权重: {args.rgb_lora_path}")
                 try:
-                    from peft import PeftModel
-                    
-                    # 检查是否是Lightning checkpoint格式 (.ckpt)
-                    if args.rgb_lora_path.endswith('.ckpt'):
-                        print("检测到Lightning checkpoint格式...")
-                        ckpt = torch.load(args.rgb_lora_path, map_location='cpu')
+                    # 检查是否是目录（推理格式 checkpoint）还是文件（Lightning checkpoint）
+                    if os.path.isdir(args.rgb_lora_path):
+                        # 推理格式 checkpoint 目录
+                        ckpt_file = os.path.join(args.rgb_lora_path, 'model.ckpt')
+                        config_file = os.path.join(args.rgb_lora_path, 'config.yaml')
                         
-                        if 'state_dict' in ckpt:
-                            state_dict = ckpt['state_dict']
-                            print(f"Checkpoint包含 {len(state_dict)} 个权重")
-                            
-                            # 分析checkpoint内容，判断是全量微调还是LoRA
-                            lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
-                            model_keys = [k for k in state_dict.keys() if k.startswith('model.')]
-                            
-                            print(f"  - 模型权重: {len(model_keys)} 个")
-                            print(f"  - LoRA参数: {len(lora_keys)} 个")
-                            
-                            success_count = 0
-                            
-                            # 判断是全量微调还是LoRA
-                            if lora_keys:
-                                # LoRA格式：包含LoRA参数
-                                print("\n检测到LoRA格式checkpoint，加载RGB LoRA权重...")
-                                if hasattr(i23d_worker, 'model'):
-                                    try:
-                                        # 提取model相关的权重（包含LoRA）
-                                        model_state_dict = {}
-                                        for key, value in state_dict.items():
-                                            if key.startswith('model.'):
-                                                new_key = key[6:]  # 去掉'model.'前缀
-                                                model_state_dict[new_key] = value
-                                        
-                                        # 先应用LoRA配置到基础模型
-                                        from peft import LoraConfig, get_peft_model
-                                        lora_config = LoraConfig(
-                                            r=8,
-                                            lora_alpha=8,
-                                            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
-                                            lora_dropout=0.0,
-                                        )
-                                        i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
-                                        
-                                        # 加载包含LoRA的权重
-                                        missing, unexpected = i23d_worker.model.load_state_dict(
-                                            model_state_dict, strict=False)
-                                        print(f"✅ RGB LoRA权重加载成功")
-                                        print(f"  - Missing keys: {len(missing)}")
-                                        print(f"  - Unexpected keys: {len(unexpected)}")
-                                        success_count += 1
-                                        
-                                    except Exception as e:
-                                        print(f"❌ RGB LoRA权重加载失败: {e}")
-                                        import traceback
-                                        traceback.print_exc()
-                            else:
-                                # 全量微调格式：不包含LoRA参数，直接加载完整模型权重
-                                print("\n检测到全量微调格式checkpoint，加载完整模型权重...")
-                                if hasattr(i23d_worker, 'model'):
-                                    try:
-                                        # 提取model相关的权重（完整权重，不含LoRA）
-                                        model_state_dict = {}
-                                        for key, value in state_dict.items():
-                                            if key.startswith('model.'):
-                                                new_key = key[6:]  # 去掉'model.'前缀
-                                                model_state_dict[new_key] = value
-                                        
-                                        # 直接加载完整模型权重（不使用LoRA）
-                                        missing, unexpected = i23d_worker.model.load_state_dict(
-                                            model_state_dict, strict=False)
-                                        print(f"✅ 全量微调权重加载成功")
-                                        print(f"  - Missing keys: {len(missing)}")
-                                        print(f"  - Unexpected keys: {len(unexpected)}")
-                                        success_count += 1
-                                        
-                                    except Exception as e:
-                                        print(f"❌ 全量微调权重加载失败: {e}")
-                                        import traceback
-                                        traceback.print_exc()
-                            
-                            if success_count > 0:
-                                checkpoint_type = "LoRA" if lora_keys else "全量微调"
-                                print(f"\n✅ 从Lightning checkpoint成功加载RGB {checkpoint_type}权重")
-                            else:
-                                print("\n❌ 没有成功加载RGB权重")
-                                
-                        else:
-                            print("❌ Checkpoint格式无效，缺少state_dict")
-                    
-                    elif os.path.isdir(args.rgb_lora_path):
-                        # 标准的PEFT格式目录
-                        print("检测到PEFT目录格式，使用标准LoRA加载方式...")
+                        if not os.path.exists(ckpt_file):
+                            raise FileNotFoundError(f"缺少文件: {ckpt_file}")
+                        if not os.path.exists(config_file):
+                            raise FileNotFoundError(f"缺少文件: {config_file}")
                         
-                        if hasattr(i23d_worker, 'model'):
-                            try:
-                                print("正在加载RGB LoRA权重到主DiT模型...")
-                                print(f"  模型类型: {type(i23d_worker.model)}")
-                                print(f"  LoRA路径: {args.rgb_lora_path}")
-                                
-                                # 直接对 pipeline.model 应用 LoRA
-                                i23d_worker.model = PeftModel.from_pretrained(
-                                    i23d_worker.model, args.rgb_lora_path)
-                                
-                                print("✅ RGB LoRA权重加载成功")
-                            except Exception as e:
-                                print(f"❌ RGB LoRA权重加载失败: {e}")
-                                import traceback
-                                traceback.print_exc()
+                        print(f"✅ 检测到 checkpoint 目录: {args.rgb_lora_path}")
+                        print("正在加载 checkpoint（自动检测格式）...")
+                        
+                        # from_single_file 会自动检测格式（Lightning 或推理格式）
+                        i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_single_file(
+                            ckpt_file,
+                            config_file,
+                            device=args.device,
+                            dtype=torch.float16,
+                            use_safetensors=False,
+                            lora_path=args.rgb_lora_path_separate,  # 可选的单独 LoRA 路径
+                        )
+                        print("✅ 成功加载 checkpoint")
+                        rgb_model_loaded = True
+                        
+                    elif os.path.isfile(args.rgb_lora_path):
+                        # Lightning checkpoint 文件（.ckpt）
+                        # 需要找到对应的 config.yaml
+                        ckpt_dir = os.path.dirname(args.rgb_lora_path)
+                        config_file = os.path.join(ckpt_dir, 'config.yaml')
+                        
+                        # 如果同目录下没有 config.yaml，尝试在多个位置查找
+                        if not os.path.exists(config_file):
+                            # 尝试在训练配置目录中查找
+                            possible_config_paths = [
+                                os.path.join(os.path.dirname(ckpt_dir), 'config.yaml'),  # 父目录
+                                os.path.join(ckpt_dir, '..', 'config.yaml'),  # 父目录（相对路径）
+                                os.path.join(os.path.dirname(os.path.dirname(ckpt_dir)), 'config.yaml'),  # 祖父目录
+                                # 尝试查找训练配置文件（通常在训练输出目录的根目录）
+                                os.path.join(os.path.dirname(os.path.dirname(ckpt_dir)), 'hunyuandit-*.yaml'),
+                            ]
+                            
+                            # 查找所有可能的路径
+                            for possible_path in possible_config_paths:
+                                if '*' in possible_path:
+                                    # 处理通配符路径
+                                    matches = glob(possible_path)
+                                    if matches:
+                                        config_file = matches[0]
+                                        break
+                                elif os.path.exists(possible_path):
+                                    config_file = possible_path
+                                    break
+                        
+                        # 如果找到了 config.yaml，使用 from_single_file 加载
+                        if os.path.exists(config_file):
+                            print(f"✅ 检测到 Lightning checkpoint 文件: {args.rgb_lora_path}")
+                            print(f"✅ 找到配置文件: {config_file}")
+                            print("正在加载 checkpoint（自动检测格式）...")
+                            
+                            # from_single_file 会自动检测格式（Lightning 或推理格式）
+                            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_single_file(
+                                args.rgb_lora_path,
+                                config_file,
+                                device=args.device,
+                                dtype=torch.float16,
+                                use_safetensors=False,
+                                lora_path=args.rgb_lora_path_separate,  # 可选的单独 LoRA 路径
+                            )
+                            print("✅ 成功加载 checkpoint")
+                            rgb_model_loaded = True
                         else:
-                            print("❌ Pipeline没有model属性")
+                            # 如果找不到 config.yaml，回退到使用预训练模型 + 加载权重的方式
+                            print(f"⚠️  警告: 找不到 config.yaml 文件")
+                            print(f"   已尝试在以下位置查找:")
+                            print(f"   - {os.path.join(ckpt_dir, 'config.yaml')}")
+                            print(f"   - {os.path.join(os.path.dirname(ckpt_dir), 'config.yaml')}")
+                            print(f"   将回退到使用预训练模型 + 加载 checkpoint 权重的方式")
+                            
+                            # 检测checkpoint是否基于Hunyuan3D-2mv训练
+                            # 通过检查路径中是否包含"mv"或"multiview_rgb_finetuning_mv"来判断
+                            is_mv_checkpoint = (
+                                'mv' in args.rgb_lora_path.lower() or 
+                                'multiview_rgb_finetuning_mv' in args.rgb_lora_path.lower() or
+                                'multiview_rgb_lora_finetuning_mv' in args.rgb_lora_path.lower()
+                            )
+                            
+                            # 如果检测到是基于mv训练的checkpoint，使用Hunyuan3D-2mv作为基础模型
+                            if is_mv_checkpoint:
+                                print("🔍 检测到checkpoint路径包含'mv'，判断为基于Hunyuan3D-2mv训练的checkpoint")
+                                print("   将使用Hunyuan3D-2mv作为基础模型来加载权重")
+                                base_model_path = 'tencent/Hunyuan3D-2mv'
+                                base_subfolder = 'hunyuan3d-dit-v2-mv'
+                                base_use_safetensors = True
+                            else:
+                                print("🔍 使用默认的基础模型配置")
+                                base_model_path = args.model_path
+                                base_subfolder = args.subfolder
+                                base_use_safetensors = IS_MV_PRETRAINED
+                            
+                            # 先加载预训练模型
+                            print(f"正在加载预训练模型: {base_model_path} (subfolder: {base_subfolder})...")
+                            i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                                base_model_path,
+                                subfolder=base_subfolder,
+                                use_safetensors=base_use_safetensors,
+                                device=args.device,
+                            )
+                            print("✅ 预训练模型加载完成")
+                            
+                            # 然后加载 Lightning checkpoint 权重
+                            print("正在从 Lightning checkpoint 加载权重...")
+                            ckpt = safe_torch_load(args.rgb_lora_path, map_location='cpu', weights_only_preferred=False)
+                            
+                            if 'state_dict' in ckpt:
+                                state_dict = ckpt['state_dict']
+                                
+                                # 加载 model (DiT) 权重
+                                if hasattr(i23d_worker, 'model') and i23d_worker.model is not None:
+                                    model_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('model.'):
+                                            new_key = key[6:]  # 去掉 'model.' 前缀
+                                            model_state_dict[new_key] = value
+                                    if model_state_dict:
+                                        missing, unexpected = i23d_worker.model.load_state_dict(model_state_dict, strict=False)
+                                        print(f"✅ DiT 模型权重加载完成: {len(model_state_dict)} 个权重")
+                                        if missing:
+                                            print(f"  - Missing keys: {len(missing)}")
+                                        if unexpected:
+                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                
+                                # 加载 VAE 权重
+                                if hasattr(i23d_worker, 'vae') and i23d_worker.vae is not None:
+                                    vae_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('first_stage_model.'):
+                                            new_key = key[19:]  # 去掉 'first_stage_model.' 前缀
+                                            vae_state_dict[new_key] = value
+                                    if vae_state_dict:
+                                        missing, unexpected = i23d_worker.vae.load_state_dict(vae_state_dict, strict=False)
+                                        print(f"✅ VAE 权重加载完成: {len(vae_state_dict)} 个权重")
+                                        if missing:
+                                            print(f"  - Missing keys: {len(missing)}")
+                                        if unexpected:
+                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                
+                                # 加载 Conditioner 权重
+                                if hasattr(i23d_worker, 'conditioner') and i23d_worker.conditioner is not None:
+                                    conditioner_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('cond_stage_model.'):
+                                            new_key = key[18:]  # 去掉 'cond_stage_model.' 前缀
+                                            conditioner_state_dict[new_key] = value
+                                    if conditioner_state_dict:
+                                        missing, unexpected = i23d_worker.conditioner.load_state_dict(conditioner_state_dict, strict=False)
+                                        print(f"✅ Conditioner 权重加载完成: {len(conditioner_state_dict)} 个权重")
+                                        if missing:
+                                            print(f"  - Missing keys: {len(missing)}")
+                                        if unexpected:
+                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                
+                                # 加载 ControlNet 权重（如果存在）
+                                if hasattr(i23d_worker, 'controlnet') and i23d_worker.controlnet is not None:
+                                    controlnet_state_dict = {}
+                                    for key, value in state_dict.items():
+                                        if key.startswith('controlnet.'):
+                                            new_key = key[11:]  # 去掉 'controlnet.' 前缀
+                                            controlnet_state_dict[new_key] = value
+                                    if controlnet_state_dict:
+                                        missing, unexpected = i23d_worker.controlnet.load_state_dict(controlnet_state_dict, strict=False)
+                                        print(f"✅ ControlNet 权重加载完成: {len(controlnet_state_dict)} 个权重")
+                                        if missing:
+                                            print(f"  - Missing keys: {len(missing)}")
+                                        if unexpected:
+                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                
+                                # 如果提供了单独的 LoRA 路径，加载 LoRA 权重
+                                if args.rgb_lora_path_separate and os.path.exists(args.rgb_lora_path_separate):
+                                    print(f"正在从单独路径加载 LoRA 权重: {args.rgb_lora_path_separate}")
+                                    try:
+                                        from peft import PeftModel
+                                        if hasattr(i23d_worker, 'model') and i23d_worker.model is not None:
+                                            i23d_worker.model = PeftModel.from_pretrained(i23d_worker.model, args.rgb_lora_path_separate)
+                                            print("✅ LoRA 权重加载完成")
+                                    except Exception as e:
+                                        print(f"⚠️  加载 LoRA 权重失败: {e}")
+                                
+                                print("✅ 成功从 Lightning checkpoint 加载权重（使用预训练模型作为基础）")
+                                rgb_model_loaded = True
+                            else:
+                                print(f"❌ Lightning checkpoint 格式无效: 缺少 'state_dict' 键")
+                                rgb_model_loaded = False
                     else:
-                        print(f"❌ 不支持的RGB LoRA权重格式: {args.rgb_lora_path}")
+                        raise ValueError(f"路径既不是文件也不是目录: {args.rgb_lora_path}")
                         
                 except Exception as e:
+                    print(f"❌ 从 checkpoint 加载失败: {e}")
                     import traceback
-                    print(f"❌ 加载RGB LoRA 权重时发生异常: {e}")
-                    print("详细错误信息:")
                     traceback.print_exc()
-                    print("将使用基础RGB条件模型")
+                    print("将使用基础模型")
+                    rgb_model_loaded = False
             else:
+                # 如果没有提供路径，使用基础模型
                 if args.rgb_lora_path:
-                    print(f"RGB LoRA 路径不存在: {args.rgb_lora_path}")
-                print("使用基础RGB条件模型（未加载LoRA权重）")
+                    print(f"RGB checkpoint 路径不存在: {args.rgb_lora_path}")
+                print("使用基础RGB条件模型（未加载训练权重）")
+                rgb_model_loaded = False
         
         # 无论是否加载LoRA，在多视图深度模式下都要设置正确的image processor和encoder
         if MULTIVIEW_DEPTH_MODE and hasattr(i23d_worker, 'image_processor'):
