@@ -9,12 +9,12 @@ training:
   steps: 10_0000_0000
   use_amp: true
   amp_type: "bf16"
-  base_lr: 1e-5
+  base_lr: 1e-8
   gradient_clip_val: 1.0
   gradient_clip_algorithm: "norm"
-  every_n_train_steps: 2000
-  val_check_interval: 1500
-  limit_val_batches: 16
+  every_n_train_steps: 1000
+  val_check_interval: 990
+  limit_val_batches: 8
   monitor: "val/total_loss"
   output_dir: "output_folder/dit/multiview_rgb_finetuning_mv"
   ckpt_path: ""  # Set to checkpoint path to resume training, e.g., "output_folder/dit/multiview_rgb_finetuning_mv/ckpt/ckpt-00020000.ckpt"
@@ -45,9 +45,9 @@ dataset:
     load_normal: false
 
     #! Point cloud sampling
-    pc_size: &pc_size 81920
-    pc_sharpedge_size: &pc_sharpedge_size 0
-    sharpedge_label: &sharpedge_label true
+    pc_size: &pc_size 5120
+    pc_sharpedge_size: &pc_sharpedge_size 5120
+    sharpedge_label: &sharpedge_label false
     return_normal: true
 
     #! Augmentation
@@ -73,11 +73,6 @@ model:
       from_pretrained: tencent/Hunyuan3D-2  # VAE使用Hunyuan3D-2（mv模型使用相同的VAE）
       subfolder: hunyuan3d-vae-v2-0  # VAE的subfolder（与Hunyuan3D-2mv一致）
       use_safetensors: false  # VAE使用ckpt格式
-      params:
-        point_feats: 4  # 匹配训练数据维度：return_normal=True(3维normal) + sharpedge_label=True(1维label) = 4维
-        pc_size: 81920  # 必须与训练数据的 pc_size 一致
-        pc_sharpedge_size: 0  # 必须与训练数据的 pc_sharpedge_size 一致
-
     cond_stage_config:
       target: hy3dshape.models.conditioner.SingleImageEncoder
       params:

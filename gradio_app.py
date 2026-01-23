@@ -2847,16 +2847,24 @@ if __name__ == '__main__':
                                             new_key = key[18:]  # 去掉 'first_stage_model.' 前缀 (长度为18)
                                             vae_state_dict[new_key] = value
                                     if vae_state_dict:
-                                        try:
-                                            missing, unexpected = i23d_worker.vae.load_state_dict(vae_state_dict, strict=False)
-                                            print(f"✅ VAE 权重加载完成: {len(vae_state_dict)} 个权重")
-                                            if missing:
-                                                print(f"  - Missing keys: {len(missing)}")
-                                            if unexpected:
-                                                print(f"  - Unexpected keys: {len(unexpected)}")
-                                        except RuntimeError as e:
-                                            print(f"⚠️  VAE 权重加载失败（可能是配置不匹配）: {e}")
-                                            print(f"   将使用预训练模型的 VAE（VAE 在训练时通常被冻结，这是正常的）")
+                                        # 对于mv checkpoint，跳过VAE权重加载
+                                        # 因为VAE在训练时被冻结，且预训练模型的VAE权重已经足够
+                                        if is_mv_checkpoint:
+                                            print(f"⏭️  跳过 VAE 权重加载（训练时VAE被冻结，使用预训练模型的VAE）")
+                                        else:
+                                            # 对于其他checkpoint，尝试加载VAE权重（可能会失败，这是正常的）
+                                            try:
+                                                missing, unexpected = i23d_worker.vae.load_state_dict(vae_state_dict, strict=False)
+                                                print(f"✅ VAE 权重加载完成: {len(vae_state_dict)} 个权重")
+                                                if missing:
+                                                    print(f"  - Missing keys: {len(missing)}")
+                                                if unexpected:
+                                                    print(f"  - Unexpected keys: {len(unexpected)}")
+                                            except RuntimeError as e:
+                                                print(f"⚠️  VAE 权重加载失败（可能是配置不匹配）: {e}")
+                                                print(f"   将使用预训练模型的 VAE（VAE 在训练时通常被冻结，这是正常的）")
+                                    else:
+                                        print(f"ℹ️  Checkpoint 中没有 VAE 权重，使用预训练模型的 VAE")
                                 
                                 # 加载 Conditioner 权重
                                 if hasattr(i23d_worker, 'conditioner') and i23d_worker.conditioner is not None:
