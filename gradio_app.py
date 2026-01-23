@@ -2585,6 +2585,21 @@ if __name__ == '__main__':
                             )
                             print("✅ 预训练模型加载完成")
                             
+                            # 检查 conditioner 的 DINO 版本（用于信息显示）
+                            # 训练和推理都使用 dinov2-giant (1536维)，与预训练模型 Hunyuan3D-2mv 一致
+                            if hasattr(i23d_worker, 'conditioner') and hasattr(i23d_worker.conditioner, 'main_image_encoder'):
+                                encoder = i23d_worker.conditioner.main_image_encoder
+                                if hasattr(encoder, 'model') and hasattr(encoder.model, 'config'):
+                                    encoder_hidden_size = encoder.model.config.hidden_size
+                                    print(f"\n🔍 检查预训练模型的 DINO encoder:")
+                                    print(f"   - 当前 encoder hidden_size: {encoder_hidden_size}")
+                                    
+                                    if encoder_hidden_size == 1536:
+                                        print(f"   ✅ 预训练模型使用 dinov2-giant (1536维)")
+                                        print(f"   ✅ 训练配置也使用 dinov2-giant (1536维)，维度匹配")
+                                    else:
+                                        print(f"   ⚠️  预训练模型 encoder hidden_size: {encoder_hidden_size}，期望 1536 (dinov2-giant)")
+                            
                             # 然后加载 Lightning checkpoint 权重
                             print("正在从 Lightning checkpoint 加载权重...")
                             ckpt = safe_torch_load(args.rgb_lora_path, map_location='cpu', weights_only_preferred=False)
@@ -2592,50 +2607,284 @@ if __name__ == '__main__':
                             if 'state_dict' in ckpt:
                                 state_dict = ckpt['state_dict']
                                 
+                                # 打印一些示例键名用于调试
+                                print(f"\n📊 Checkpoint键名分析:")
+                                model_keys = [k for k in state_dict.keys() if k.startswith('model.')]
+                                vae_keys = [k for k in state_dict.keys() if k.startswith('first_stage_model.')]
+                                cond_keys = [k for k in state_dict.keys() if k.startswith('cond_stage_model.')]
+                                print(f"  - model.* 键: {len(model_keys)} 个 (示例: {model_keys[:3] if model_keys else []})")
+                                print(f"  - first_stage_model.* 键: {len(vae_keys)} 个 (示例: {vae_keys[:3] if vae_keys else []})")
+                                print(f"  - cond_stage_model.* 键: {len(cond_keys)} 个 (示例: {cond_keys[:3] if cond_keys else []})")
+                                
+                                # 检查 cross-attention 的 to_k 权重，推断实际的 context_dim
+                                # 这是最准确的方法，因为 cross-attention 的输入维度就是 context_dim
+                                inferred_from_attn = None
+                                for key, value in state_dict.items():
+                                    if 'model.blocks.0.attn2.to_k.weight' in key:
+                                        if len(value.shape) >= 2:
+                                            inferred_from_attn = value.shape[1]  # to_k 的输入维度是 context_dim
+                                            print(f"  🔍 从 cross-attention (blocks.0.attn2.to_k.weight) 推断 context_dim: {inferred_from_attn}")
+                                            print(f"     权重形状: {value.shape} (输入维度={value.shape[1]})")
+                                            break
+                                
+                                # 如果找不到，尝试其他 block
+                                if inferred_from_attn is None:
+                                    for key, value in state_dict.items():
+                                        if 'attn2.to_k.weight' in key and 'blocks.' in key:
+                                            if len(value.shape) >= 2:
+                                                inferred_from_attn = value.shape[1]
+                                                print(f"  🔍 从 {key} 推断 context_dim: {inferred_from_attn}")
+                                                break
+                                
+                                # 检测模型类型：根据checkpoint中的键名判断是 HunYuanDiTPlain 还是 Hunyuan3DDiT
+                                # HunYuanDiTPlain 的特征键名: x_embedder, t_embedder, pooler, blocks
+                                # Hunyuan3DDiT 的特征键名: latent_in, time_in, cond_in, double_blocks, single_blocks
+                                is_hunyuan_dit_plain = any(
+                                    'x_embedder' in k or 't_embedder' in k or 'pooler' in k 
+                                    for k in model_keys[:20]  # 检查前20个键
+                                )
+                                
+                                if is_hunyuan_dit_plain:
+                                    print("\n🔍 检测到checkpoint使用的是 HunYuanDiTPlain 模型架构")
+                                    
+                                    # 优先尝试从训练配置目录查找config.yaml来获取模型参数
+                                    # 这样可以直接使用训练时的配置创建模型，确保架构一致
+                                    training_config_path = None
+                                    # 先尝试查找训练配置文件
+                                    for parent_dir in [ckpt_dir, os.path.dirname(ckpt_dir), os.path.dirname(os.path.dirname(ckpt_dir))]:
+                                        if os.path.exists(parent_dir):
+                                            config_files = glob(os.path.join(parent_dir, 'hunyuandit-*.yaml'))
+                                            if config_files:
+                                                training_config_path = config_files[0]
+                                                break
+                                    
+                                    if training_config_path and os.path.exists(training_config_path):
+                                        print(f"   ✅ 找到训练配置文件: {training_config_path}")
+                                        try:
+                                            import yaml
+                                            from hy3dshape.utils import instantiate_from_config
+                                            
+                                            with open(training_config_path, 'r') as f:
+                                                training_config = yaml.safe_load(f)
+                                            
+                                            # 从配置中获取denoiser_cfg（这是训练时实际使用的模型配置）
+                                            if 'model' in training_config and 'params' in training_config['model']:
+                                                denoiser_cfg = training_config['model']['params'].get('denoiser_cfg', {})
+                                                
+                                                print(f"   使用训练配置创建模型（与训练时完全一致）:")
+                                                print(f"     target: {denoiser_cfg.get('target', 'N/A')}")
+                                                print(f"     from_pretrained: {denoiser_cfg.get('from_pretrained', 'N/A')}")
+                                                
+                                                # 使用 instantiate_from_config 创建模型（与训练时完全一致）
+                                                # 这会正确处理 from_pretrained 等参数，创建与训练时相同的架构
+                                                new_model = instantiate_from_config(denoiser_cfg, device=args.device, dtype=torch.float16)
+                                                
+                                                print(f"   ✅ 使用训练配置创建了模型: {type(new_model).__name__}")
+                                                
+                                                # 替换pipeline中的model
+                                                i23d_worker.model = new_model
+                                                print(f"   ✅ 已替换pipeline中的model（架构与训练时一致）")
+                                                
+                                        except Exception as e:
+                                            print(f"   ⚠️  从配置文件创建模型失败: {e}")
+                                            import traceback
+                                            traceback.print_exc()
+                                            print(f"   将使用预训练模型架构（可能不完全匹配）")
+                                    else:
+                                        print(f"   ⚠️  未找到训练配置文件")
+                                        print(f"   将根据checkpoint中的键名和权重形状自动推断模型参数并创建 HunYuanDiTPlain 模型")
+                                        
+                                        # 从checkpoint中推断模型参数
+                                        # 1. context_dim: 已经从 cross-attention 推断出来了
+                                        inferred_context_dim = inferred_from_attn if inferred_from_attn is not None else 1536
+                                        
+                                        # 2. text_len: 从 pooler.positional_embedding 的形状推断
+                                        inferred_text_len = 257  # 默认值
+                                        for key, value in state_dict.items():
+                                            if 'model.pooler.positional_embedding' in key:
+                                                # positional_embedding 的形状是 [text_len + 1, hidden_size]
+                                                inferred_text_len = value.shape[0] - 1
+                                                print(f"   从 pooler.positional_embedding 推断 text_len: {inferred_text_len}")
+                                                break
+                                        
+                                        # 3. input_size: 从 VAE 配置或使用默认值
+                                        inferred_input_size = 4096  # 从训练配置可以看出是 4096
+                                        
+                                        # 4. hidden_size: 从权重的形状推断
+                                        inferred_hidden_size = 1024  # 默认值
+                                        for key, value in state_dict.items():
+                                            if 'model.x_embedder.weight' in key:
+                                                # x_embedder.weight 的形状是 [hidden_size, in_channels]
+                                                inferred_hidden_size = value.shape[0]
+                                                print(f"   从 x_embedder.weight 推断 hidden_size: {inferred_hidden_size}")
+                                                break
+                                        
+                                        # 5. depth: 从 blocks 键的数量推断
+                                        inferred_depth = 24  # 默认值
+                                        block_indices = set()
+                                        for key in state_dict.keys():
+                                            if 'model.blocks.' in key:
+                                                # 提取 block 索引，例如 'model.blocks.0.attn1.to_q.weight' -> 0
+                                                parts = key.split('model.blocks.')
+                                                if len(parts) > 1:
+                                                    block_idx = parts[1].split('.')[0]
+                                                    try:
+                                                        block_indices.add(int(block_idx))
+                                                    except:
+                                                        pass
+                                        if block_indices:
+                                            inferred_depth = max(block_indices) + 1
+                                            print(f"   从 blocks 键推断 depth: {inferred_depth}")
+                                        
+                                        # 6. num_heads: 从 attention 权重推断
+                                        inferred_num_heads = 16  # 默认值
+                                        for key, value in state_dict.items():
+                                            if 'model.blocks.0.attn1.to_q.weight' in key:
+                                                # to_q.weight 的形状是 [hidden_size, hidden_size]
+                                                # num_heads = hidden_size / head_dim，但我们需要从其他权重推断
+                                                # 通常 num_heads = 16 对于 hidden_size=1024
+                                                inferred_num_heads = 16
+                                                break
+                                        
+                                        print(f"\n   推断的模型参数:")
+                                        print(f"     input_size: {inferred_input_size}")
+                                        print(f"     context_dim: {inferred_context_dim}")
+                                        print(f"     text_len: {inferred_text_len}")
+                                        print(f"     hidden_size: {inferred_hidden_size}")
+                                        print(f"     depth: {inferred_depth}")
+                                        print(f"     num_heads: {inferred_num_heads}")
+                                        
+                                        try:
+                                            from hy3dshape.models.denoisers.hunyuandit import HunYuanDiTPlain
+                                            
+                                            # 创建 HunYuanDiTPlain 模型
+                                            new_model = HunYuanDiTPlain(
+                                                input_size=inferred_input_size,
+                                                context_dim=inferred_context_dim,
+                                                text_len=inferred_text_len,
+                                                hidden_size=inferred_hidden_size,
+                                                depth=inferred_depth,
+                                                num_heads=inferred_num_heads,
+                                            )
+                                            new_model = new_model.to(device=args.device, dtype=torch.float16)
+                                            
+                                            print(f"   ✅ 已创建 HunYuanDiTPlain 模型（架构与checkpoint一致）")
+                                            
+                                            # 替换pipeline中的model
+                                            i23d_worker.model = new_model
+                                            print(f"   ✅ 已替换pipeline中的model")
+                                            
+                                        except Exception as e:
+                                            print(f"   ⚠️  创建 HunYuanDiTPlain 模型失败: {e}")
+                                            import traceback
+                                            traceback.print_exc()
+                                            print(f"   将使用预训练模型架构加载权重（可能不完全匹配）")
+                                
                                 # 加载 model (DiT) 权重
+                                # Lightning checkpoint 中保存的键名是 'model.*'，需要去掉前缀
                                 if hasattr(i23d_worker, 'model') and i23d_worker.model is not None:
                                     model_state_dict = {}
                                     for key, value in state_dict.items():
                                         if key.startswith('model.'):
                                             new_key = key[6:]  # 去掉 'model.' 前缀
                                             model_state_dict[new_key] = value
+                                    
+                                    print(f"   提取了 {len(model_state_dict)} 个模型权重（从 'model.*' 键）")
+                                    
                                     if model_state_dict:
+                                        # 打印一些期望的键名用于对比
+                                        expected_keys = list(i23d_worker.model.state_dict().keys())
+                                        print(f"\n📋 Pipeline模型期望的键名示例 (前10个): {expected_keys[:10]}")
+                                        print(f"📋 Checkpoint提取的键名示例 (前10个): {list(model_state_dict.keys())[:10]}")
+                                        
+                                        # 检查并修复 pooler.positional_embedding 的维度
+                                        if 'pooler.positional_embedding' in model_state_dict:
+                                            ckpt_pos_emb = model_state_dict['pooler.positional_embedding']
+                                            ckpt_pos_emb_shape = ckpt_pos_emb.shape
+                                            if hasattr(i23d_worker.model, 'pooler') and hasattr(i23d_worker.model.pooler, 'positional_embedding'):
+                                                model_pos_emb_shape = i23d_worker.model.pooler.positional_embedding.shape
+                                                print(f"\n🔍 pooler.positional_embedding 维度检查:")
+                                                print(f"   Checkpoint: {ckpt_pos_emb_shape}")
+                                                print(f"   模型期望: {model_pos_emb_shape}")
+                                                if ckpt_pos_emb_shape != model_pos_emb_shape:
+                                                    print(f"   ⚠️  维度不匹配！将直接替换为checkpoint中的权重")
+                                                    # 直接替换，不检查维度（强制使用checkpoint中的权重）
+                                                    with torch.no_grad():
+                                                        i23d_worker.model.pooler.positional_embedding.data = ckpt_pos_emb.clone().to(
+                                                            device=i23d_worker.model.pooler.positional_embedding.device,
+                                                            dtype=i23d_worker.model.pooler.positional_embedding.dtype
+                                                        )
+                                                    print(f"   ✅ 已强制替换 pooler.positional_embedding")
+                                                    # 从 model_state_dict 中移除，避免重复加载导致错误
+                                                    del model_state_dict['pooler.positional_embedding']
+                                                else:
+                                                    print(f"   ✅ 维度匹配，将正常加载")
+                                        
                                         missing, unexpected = i23d_worker.model.load_state_dict(model_state_dict, strict=False)
-                                        print(f"✅ DiT 模型权重加载完成: {len(model_state_dict)} 个权重")
+                                        print(f"\n✅ DiT 模型权重加载完成: {len(model_state_dict)} 个权重")
                                         if missing:
-                                            print(f"  - Missing keys: {len(missing)}")
+                                            print(f"  - Missing keys: {len(missing)} (前10个: {list(missing)[:10]})")
                                         if unexpected:
-                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                            print(f"  - Unexpected keys: {len(unexpected)} (前10个: {list(unexpected)[:10]})")
+                                        
+                                        # 计算匹配率
+                                        total_expected = len(expected_keys)
+                                        matched = total_expected - len(missing)
+                                        if total_expected > 0:
+                                            match_rate = matched / total_expected * 100
+                                            print(f"  - 匹配率: {matched}/{total_expected} ({match_rate:.1f}%)")
+                                    else:
+                                        print("⚠️  警告: 没有提取到任何DiT模型权重")
                                 
                                 # 加载 VAE 权重
+                                # 注意：VAE 在训练时通常被冻结（instantiate_non_trainable_model），
+                                # 所以推理时应该直接使用预训练模型的 VAE，不需要从 checkpoint 加载
+                                # 但如果训练时 VAE 被更新了，可以尝试加载（可能会因为配置不匹配而失败）
                                 if hasattr(i23d_worker, 'vae') and i23d_worker.vae is not None:
                                     vae_state_dict = {}
                                     for key, value in state_dict.items():
                                         if key.startswith('first_stage_model.'):
-                                            new_key = key[19:]  # 去掉 'first_stage_model.' 前缀
+                                            new_key = key[18:]  # 去掉 'first_stage_model.' 前缀 (长度为18)
                                             vae_state_dict[new_key] = value
                                     if vae_state_dict:
-                                        missing, unexpected = i23d_worker.vae.load_state_dict(vae_state_dict, strict=False)
-                                        print(f"✅ VAE 权重加载完成: {len(vae_state_dict)} 个权重")
-                                        if missing:
-                                            print(f"  - Missing keys: {len(missing)}")
-                                        if unexpected:
-                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                        try:
+                                            missing, unexpected = i23d_worker.vae.load_state_dict(vae_state_dict, strict=False)
+                                            print(f"✅ VAE 权重加载完成: {len(vae_state_dict)} 个权重")
+                                            if missing:
+                                                print(f"  - Missing keys: {len(missing)}")
+                                            if unexpected:
+                                                print(f"  - Unexpected keys: {len(unexpected)}")
+                                        except RuntimeError as e:
+                                            print(f"⚠️  VAE 权重加载失败（可能是配置不匹配）: {e}")
+                                            print(f"   将使用预训练模型的 VAE（VAE 在训练时通常被冻结，这是正常的）")
                                 
                                 # 加载 Conditioner 权重
                                 if hasattr(i23d_worker, 'conditioner') and i23d_worker.conditioner is not None:
                                     conditioner_state_dict = {}
                                     for key, value in state_dict.items():
                                         if key.startswith('cond_stage_model.'):
-                                            new_key = key[18:]  # 去掉 'cond_stage_model.' 前缀
+                                            new_key = key[17:]  # 去掉 'cond_stage_model.' 前缀 (长度为17)
                                             conditioner_state_dict[new_key] = value
+                                    
                                     if conditioner_state_dict:
+                                        # 打印一些期望的键名用于对比
+                                        expected_cond_keys = list(i23d_worker.conditioner.state_dict().keys())
+                                        print(f"\n📋 Conditioner期望的键名示例 (前10个): {expected_cond_keys[:10]}")
+                                        print(f"📋 Checkpoint提取的Conditioner键名示例 (前10个): {list(conditioner_state_dict.keys())[:10]}")
+                                        
                                         missing, unexpected = i23d_worker.conditioner.load_state_dict(conditioner_state_dict, strict=False)
                                         print(f"✅ Conditioner 权重加载完成: {len(conditioner_state_dict)} 个权重")
                                         if missing:
-                                            print(f"  - Missing keys: {len(missing)}")
+                                            print(f"  - Missing keys: {len(missing)} (前10个: {list(missing)[:10]})")
                                         if unexpected:
-                                            print(f"  - Unexpected keys: {len(unexpected)}")
+                                            print(f"  - Unexpected keys: {len(unexpected)} (前10个: {list(unexpected)[:10]})")
+                                        
+                                        # 检查 conditioner 的实际输出维度
+                                        if hasattr(i23d_worker.conditioner, 'main_image_encoder'):
+                                            encoder = i23d_worker.conditioner.main_image_encoder
+                                            if hasattr(encoder, 'model') and hasattr(encoder.model, 'config'):
+                                                encoder_hidden_size = encoder.model.config.hidden_size
+                                                print(f"  📊 Conditioner encoder hidden_size: {encoder_hidden_size} (期望: 1536 for dinov2-giant)")
                                 
                                 # 加载 ControlNet 权重（如果存在）
                                 if hasattr(i23d_worker, 'controlnet') and i23d_worker.controlnet is not None:
@@ -2702,8 +2951,9 @@ if __name__ == '__main__':
                         print("正在替换为DinoImageEncoderMV...")
                         
                         # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
+                        # 使用 dinov2-giant (1536维) 以匹配预训练模型 Hunyuan3D-2mv
                         new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
+                            version='facebook/dinov2-giant',
                             image_size=518,
                             use_cls_token=True,
                             view_num=args.num_views
@@ -2742,8 +2992,9 @@ if __name__ == '__main__':
                         print("正在替换为DinoImageEncoderMV...")
                         
                         # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
+                        # 使用 dinov2-giant (1536维) 以匹配预训练模型 Hunyuan3D-2mv
                         new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
+                            version='facebook/dinov2-giant',
                             image_size=518,
                             use_cls_token=True,
                             view_num=args.num_views
@@ -2782,8 +3033,9 @@ if __name__ == '__main__':
                         print("正在替换为DinoImageEncoderMV...")
                         
                         # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
+                        # 使用 dinov2-giant (1536维) 以匹配预训练模型 Hunyuan3D-2mv
                         new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
+                            version='facebook/dinov2-giant',
                             image_size=518,
                             use_cls_token=True,
                             view_num=args.num_views

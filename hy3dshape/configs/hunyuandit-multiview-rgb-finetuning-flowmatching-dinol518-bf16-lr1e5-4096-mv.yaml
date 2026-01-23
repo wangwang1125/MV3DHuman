@@ -70,9 +70,13 @@ model:
 
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
-      from_pretrained: tencent/Hunyuan3D-2.1  # VAE使用Hunyuan3D-2.1（mv模型可能没有单独的VAE）
-      subfolder: hunyuan3d-vae-v2-1  # VAE的subfolder
+      from_pretrained: tencent/Hunyuan3D-2  # VAE使用Hunyuan3D-2（mv模型使用相同的VAE）
+      subfolder: hunyuan3d-vae-v2-0  # VAE的subfolder（与Hunyuan3D-2mv一致）
       use_safetensors: false  # VAE使用ckpt格式
+      params:
+        point_feats: 4  # 匹配训练数据维度：return_normal=True(3维normal) + sharpedge_label=True(1维label) = 4维
+        pc_size: 81920  # 必须与训练数据的 pc_size 一致
+        pc_sharpedge_size: 0  # 必须与训练数据的 pc_sharpedge_size 一致
 
     cond_stage_config:
       target: hy3dshape.models.conditioner.SingleImageEncoder

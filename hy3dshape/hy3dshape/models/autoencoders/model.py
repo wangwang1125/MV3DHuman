@@ -154,7 +154,14 @@ class VectsetVAE(nn.Module):
         model_kwargs.update(kwargs)
 
         model = cls(**model_kwargs)
-        model.load_state_dict(ckpt)
+        # 使用 strict=False 允许部分权重不匹配（如 point_feats 改变时 input_proj 维度会不同）
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        if missing_keys:
+            logger.warning(f"Missing keys when loading VAE checkpoint: {len(missing_keys)} keys")
+            # 只打印前10个缺失的key作为示例
+            logger.warning(f"Sample missing keys: {missing_keys[:10]}")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys when loading VAE checkpoint: {len(unexpected_keys)} keys")
         model.to(device=device, dtype=dtype)
         return model
 
