@@ -30,6 +30,14 @@ import hy3dshape.utils.trainings.mesh
 import hy3dshape.utils.trainings.peft
 import hy3dshape.utils.trainings.callback
 
+# Register submodules in sys.modules so they can be imported as hy3dgen.shapegen.utils.trainings.xxx
+# This allows imports like: from hy3dgen.shapegen.utils.trainings.mesh_log_callback import ...
+sys.modules['hy3dgen.shapegen.utils.trainings.lr_scheduler'] = hy3dshape.utils.trainings.lr_scheduler
+sys.modules['hy3dgen.shapegen.utils.trainings.mesh_log_callback'] = hy3dshape.utils.trainings.mesh_log_callback
+sys.modules['hy3dgen.shapegen.utils.trainings.mesh'] = hy3dshape.utils.trainings.mesh
+sys.modules['hy3dgen.shapegen.utils.trainings.peft'] = hy3dshape.utils.trainings.peft
+sys.modules['hy3dgen.shapegen.utils.trainings.callback'] = hy3dshape.utils.trainings.callback
+
 # Import specific classes
 from hy3dshape.utils.trainings.lr_scheduler import LambdaWarmUpCosineFactorScheduler
 from hy3dshape.utils.trainings.mesh_log_callback import (

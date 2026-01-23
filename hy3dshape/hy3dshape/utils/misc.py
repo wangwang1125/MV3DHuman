@@ -28,7 +28,19 @@ def get_config_from_file(config_file: str) -> Union[DictConfig, ListConfig]:
 
 
 def get_obj_from_str(string, reload=False):
+    # 直接使用原始路径，不再进行转换
+    # hy3dgen.shapegen 和 hy3dshape 都可以直接使用
     module, cls = string.rsplit(".", 1)
+    
+    # Special handling for hy3dgen.shapegen.utils.trainings submodules
+    # Ensure parent module is imported first to trigger sys.modules registration
+    if 'hy3dgen.shapegen.utils.trainings.' in module:
+        parent_module = module.rsplit('.', 1)[0]  # e.g., 'hy3dgen.shapegen.utils.trainings'
+        try:
+            importlib.import_module(parent_module)
+        except ImportError:
+            pass  # Parent module may already be imported
+    
     if reload:
         module_imp = importlib.import_module(module)
         importlib.reload(module_imp)
