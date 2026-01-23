@@ -14,12 +14,16 @@
 
 import os
 import math
+import yaml
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
 import torch
 from torch import Tensor, nn
 from einops import rearrange
+
+from hy3dshape.utils.utils import smart_load_model
+from hy3dshape.utils import logger
 
 # set up attention backend
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
@@ -402,3 +406,95 @@ class Hunyuan3DDiT(nn.Module):
         latent = latent[:, cond.shape[1]:, ...]
         latent = self.final_layer(latent, vec)
         return latent
+
+    @classmethod
+    def from_single_file(
+        cls,
+        ckpt_path,
+        config_path,
+        device='cuda',
+        dtype=torch.float16,
+        use_safetensors=None,
+        **kwargs,
+    ):
+        # load config
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # load ckpt
+        if use_safetensors:
+            ckpt_path = ckpt_path.replace('.ckpt', '.safetensors')
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Model file {ckpt_path} not found")
+
+        logger.info(f"Loading model from {ckpt_path}")
+        if use_safetensors:
+            import safetensors.torch
+            ckpt = safetensors.torch.load_file(ckpt_path, device='cpu')
+        else:
+            ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+
+        # 处理不同的checkpoint格式
+        # 1. 如果是嵌套字典格式（如 {'model': {...}}）
+        if isinstance(ckpt, dict) and 'model' in ckpt and isinstance(ckpt['model'], dict):
+            model_ckpt = ckpt['model']
+        # 2. 如果是扁平字典格式，键名包含 'model.' 前缀（如 safetensors 格式）
+        elif isinstance(ckpt, dict) and any(k.startswith('model.') for k in ckpt.keys()):
+            model_ckpt = {}
+            for key, value in ckpt.items():
+                if key.startswith('model.'):
+                    new_key = key[6:]  # 去掉 'model.' 前缀
+                    model_ckpt[new_key] = value
+        else:
+            model_ckpt = ckpt
+
+        if 'model' in config:
+            config = config['model']
+
+        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
+        if 'target' in config:
+            config['target'] = config['target'].replace('hy3dgen.shapegen', 'hy3dshape')
+            config['target'] = config['target'].replace('hy3dgen', 'hy3dshape')
+
+        model_kwargs = config.get('params', {}).copy()
+        # 更新参数：kwargs 中的参数会覆盖预训练配置
+        model_kwargs.update(kwargs)
+
+        model = cls(**model_kwargs)
+        
+        # 加载权重
+        missing, unexpected = model.load_state_dict(model_ckpt, strict=False)
+        if missing:
+            logger.warning(f"Missing keys when loading Hunyuan3DDiT: {len(missing)} keys")
+        if unexpected:
+            logger.warning(f"Unexpected keys when loading Hunyuan3DDiT: {len(unexpected)} keys")
+        
+        model = model.to(device=device, dtype=dtype)
+        return model
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_path,
+        device='cuda',
+        dtype=torch.float16,
+        use_safetensors=False,
+        variant='fp16',
+        subfolder='hunyuan3d-dit-v2-mv',
+        **kwargs,
+    ):
+        config_path, ckpt_path = smart_load_model(
+            model_path,
+            subfolder=subfolder,
+            use_safetensors=use_safetensors,
+            variant=variant
+        )
+
+        return cls.from_single_file(
+            ckpt_path,
+            config_path,
+            device=device,
+            dtype=dtype,
+            use_safetensors=use_safetensors,
+            **kwargs
+        )
