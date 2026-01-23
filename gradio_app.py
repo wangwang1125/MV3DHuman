@@ -2643,9 +2643,29 @@ if __name__ == '__main__':
                                     'x_embedder' in k or 't_embedder' in k or 'pooler' in k 
                                     for k in model_keys[:20]  # 检查前20个键
                                 )
+                                is_hunyuan3d_dit = any(
+                                    'latent_in' in k or 'time_in' in k or 'cond_in' in k or 
+                                    'double_blocks' in k or 'single_blocks' in k
+                                    for k in model_keys[:20]  # 检查前20个键
+                                )
                                 
-                                if is_hunyuan_dit_plain:
+                                print(f"\n🔍 模型类型检测结果:")
+                                print(f"   is_hunyuan_dit_plain: {is_hunyuan_dit_plain}")
+                                print(f"   is_hunyuan3d_dit: {is_hunyuan3d_dit}")
+                                print(f"   前10个model键名示例: {model_keys[:10]}")
+                                
+                                if is_hunyuan3d_dit:
+                                    print("\n🔍 检测到checkpoint使用的是 Hunyuan3DDiT 模型架构")
+                                    print("   ✅ 这与预训练模型 Hunyuan3D-2mv 的架构一致")
+                                    print("   ✅ 键名应该完全匹配，可以直接加载")
+                                    # 对于 Hunyuan3DDiT，通常不需要重新创建模型
+                                    # 因为 Pipeline 已经加载了正确的预训练模型
+                                    # 只需要加载权重即可
+                                
+                                elif is_hunyuan_dit_plain:
                                     print("\n🔍 检测到checkpoint使用的是 HunYuanDiTPlain 模型架构")
+                                    print("   ⚠️  注意：虽然训练配置可能写的是 Hunyuan3DDiT，但预训练模型 Hunyuan3D-2mv")
+                                    print("      实际使用的是 HunYuanDiTPlain，所以训练出的 checkpoint 键名是 HunYuanDiTPlain 的")
                                     
                                     # 优先尝试从训练配置目录查找config.yaml来获取模型参数
                                     # 这样可以直接使用训练时的配置创建模型，确保架构一致

@@ -17,7 +17,7 @@ training:
   limit_val_batches: 8
   monitor: "val/total_loss"
   output_dir: "output_folder/dit/multiview_rgb_finetuning_mv"
-  ckpt_path: ""  # Set to checkpoint path to resume training, e.g., "output_folder/dit/multiview_rgb_finetuning_mv/ckpt/ckpt-00020000.ckpt"
+  ckpt_path: "" #"output_folder/dit/multiview_rgb_finetuning_mv/ckpt/ckpt-step=00002000.ckpt" 
 
 dataset:
   target: hy3dshape.data.dit_asl_multiview.AlignedShapeLatentMultiViewModule
