@@ -110,11 +110,6 @@ def export_to_trimesh(mesh_output):
 
 
 def get_obj_from_str(string, reload=False):
-    # 修复模块路径：将 hy3dgen 替换为 hy3dshape
-    if 'hy3dgen' in string:
-        string = string.replace('hy3dgen.shapegen', 'hy3dshape')
-        string = string.replace('hy3dgen', 'hy3dshape')
-    
     module, cls = string.rsplit(".", 1)
     if reload:
         module_imp = importlib.import_module(module)
@@ -125,7 +120,12 @@ def get_obj_from_str(string, reload=False):
 def instantiate_from_config(config, **kwargs):
     if "target" not in config:
         raise KeyError("Expected key `target` to instantiate.")
-    cls = get_obj_from_str(config["target"])
+    try:
+        target = config['target']
+        cls = get_obj_from_str(target)
+    except Exception as e:
+        target = config['target'].replace("hy3dshape", "hy3dgen.shapegen")
+        cls = get_obj_from_str(target)
     params = config.get("params", dict())
     kwargs.update(params)
     instance = cls(**kwargs)
@@ -172,33 +172,6 @@ class Hunyuan3DDiTPipeline:
         else:
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
         # load model
-        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
-        def fix_config_module_path(cfg, depth=0):
-            """将配置中的 hy3dgen 模块路径替换为 hy3dshape（递归修复）"""
-            if depth > 10:  # 防止无限递归
-                return
-            
-            if isinstance(cfg, dict):
-                # 修复 target 字段
-                if 'target' in cfg:
-                    original_target = cfg['target']
-                    if 'hy3dgen' in original_target:
-                        cfg['target'] = original_target.replace('hy3dgen.shapegen', 'hy3dshape')
-                        cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
-                        logger.debug(f"修复模块路径: {original_target} -> {cfg['target']}")
-                
-                # 递归修复所有嵌套的字典和列表
-                for key, value in cfg.items():
-                    if isinstance(value, (dict, list)):
-                        fix_config_module_path(value, depth + 1)
-            elif isinstance(cfg, list):
-                for item in cfg:
-                    if isinstance(item, (dict, list)):
-                        fix_config_module_path(item, depth + 1)
-        
-        # 修复所有配置中的模块路径
-        fix_config_module_path(config)
-        
         model = instantiate_from_config(config['model'])
         model.load_state_dict(ckpt['model'])
         vae = instantiate_from_config(config['vae'])
@@ -230,9 +203,9 @@ class Hunyuan3DDiTPipeline:
         model_path,
         device='cuda',
         dtype=torch.float16,
-        use_safetensors=False,
+        use_safetensors=True,
         variant='fp16',
-        subfolder='hunyuan3d-dit-v2-1',
+        subfolder='hunyuan3d-dit-v2-0',
         **kwargs,
     ):
         kwargs['from_pretrained_kwargs'] = dict(
@@ -388,12 +361,10 @@ class Hunyuan3DDiTPipeline:
         if gpu_id is not None and device_index is not None:
             raise ValueError(
                 f"You have passed both `gpu_id`={gpu_id} and an index as part of the passed device `device`={device}"
-                f"Cannot pass both. Please make sure to either not define `gpu_id` or not pass the index as part of "
-                f"the device: `device`={torch_device.type}"
+                f"Cannot pass both. Please make sure to either not define `gpu_id` or not pass the index as part of the device: `device`={torch_device.type}"
             )
 
-        # _offload_gpu_id should be set to passed gpu_id (or id in passed `device`)
-        # or default to previously set id or default to 0
+        # _offload_gpu_id should be set to passed gpu_id (or id in passed `device`) or default to previously set id or default to 0
         self._offload_gpu_id = gpu_id or torch_device.index or getattr(self, "_offload_gpu_id", 0)
 
         device_type = torch_device.type
@@ -403,8 +374,7 @@ class Hunyuan3DDiTPipeline:
             self.to("cpu")
             device_mod = getattr(torch, self.device.type, None)
             if hasattr(device_mod, "empty_cache") and device_mod.is_available():
-                device_mod.empty_cache()  
-                # otherwise we don't see the memory savings (but they probably exist)
+                device_mod.empty_cache()  # otherwise we don't see the memory savings (but they probably exist)
 
         all_model_components = {k: v for k, v in self.components.items() if isinstance(v, torch.nn.Module)}
 
@@ -420,8 +390,7 @@ class Hunyuan3DDiTPipeline:
 
         # CPU offload models that are not in the seq chain unless they are explicitly excluded
         # these models will stay on CPU until maybe_free_model_hooks is called
-        # some models cannot be in the seq chain because they are iteratively called, 
-        # such as controlnet
+        # some models cannot be in the seq chain because they are iteratively called, such as controlnet
         for name, model in all_model_components.items():
             if not isinstance(model, torch.nn.Module):
                 continue
@@ -518,35 +487,7 @@ class Hunyuan3DDiTPipeline:
         latents = latents * getattr(self.scheduler, 'init_noise_sigma', 1.0)
         return latents
 
-    def prepare_image(self, image, mask=None) -> dict:
-        if isinstance(image, torch.Tensor) and isinstance(mask, torch.Tensor):
-            outputs = {
-                'image': image,
-                'mask': mask
-            }
-            return outputs
-            
-        # Handle dictionary input for multi-view images (MVImageProcessorV2)
-        if isinstance(image, dict):
-            # For multi-view input, pass the entire dictionary to the image processor
-            return self.image_processor(image)
-        
-        # Handle list of dictionaries for multi-view images
-        if isinstance(image, list) and len(image) > 0 and isinstance(image[0], dict):
-            outputs = []
-            for img_dict in image:
-                output = self.image_processor(img_dict)
-                outputs.append(output)
-            
-            cond_input = {k: [] for k in outputs[0].keys()}
-            for output in outputs:
-                for key, value in output.items():
-                    cond_input[key].append(value)
-            for key, value in cond_input.items():
-                if isinstance(value[0], torch.Tensor):
-                    cond_input[key] = torch.cat(value, dim=0)
-            return cond_input
-            
+    def prepare_image(self, image) -> dict:
         if isinstance(image, str) and not os.path.exists(image):
             raise FileNotFoundError(f"Couldn't find image at path {image}")
 
@@ -601,7 +542,7 @@ class Hunyuan3DDiTPipeline:
             return
         logger.info('The parameters `mc_algo` is deprecated, and will be removed in future versions.\n'
                     'Please use: \n'
-                    'from hy3dshape.models.autoencoders import SurfaceExtractors\n'
+                    'from hy3dgen.shapegen.models.autoencoders import SurfaceExtractors\n'
                     'pipeline.vae.surface_extractor = SurfaceExtractors[mc_algo]() instead\n')
         if mc_algo not in SurfaceExtractors.keys():
             raise ValueError(f"Unknown mc_algo {mc_algo}")
@@ -639,12 +580,8 @@ class Hunyuan3DDiTPipeline:
                                       getattr(self.model, 'guidance_cond_proj_dim', None) is None
         dual_guidance = dual_guidance_scale >= 0 and dual_guidance
 
-        if isinstance(image, torch.Tensor):
-            pass
-        else:
-            cond_inputs = self.prepare_image(image)
-            image = cond_inputs.pop('image')
-        
+        cond_inputs = self.prepare_image(image)
+        image = cond_inputs.pop('image')
         cond = self.encode_cond(
             image=image,
             additional_cond_inputs=cond_inputs,
@@ -745,7 +682,7 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
     @torch.inference_mode()
     def __call__(
         self,
-        image: Union[str, List[str], Image.Image, dict, List[dict], torch.Tensor] = None,
+        image: Union[str, List[str], Image.Image, dict, List[dict]] = None,
         num_inference_steps: int = 50,
         timesteps: List[int] = None,
         sigmas: List[float] = None,
@@ -759,19 +696,10 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
         num_chunks=8000,
         output_type: Optional[str] = "trimesh",
         enable_pbar=True,
-        mask = None,
         **kwargs,
     ) -> List[List[trimesh.Trimesh]]:
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
-        
-        # 获取深度条件相关参数
-        controlnet = kwargs.pop("controlnet", None)
-        depth = kwargs.pop("depth", None)
-        
-        # 获取法线图相关参数
-        normal = kwargs.pop("normal", None)
-        normal_mask = kwargs.pop("normal_mask", None)
 
         self.set_surface_extractor(mc_algo)
 
@@ -782,74 +710,14 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
             self.model.guidance_embed is True
         )
 
-        # print('image', type(image), 'mask', type(mask))
-        cond_inputs = self.prepare_image(image, mask)
+        cond_inputs = self.prepare_image(image)
         image = cond_inputs.pop('image')
-        
         cond = self.encode_cond(
             image=image,
             additional_cond_inputs=cond_inputs,
             do_classifier_free_guidance=do_classifier_free_guidance,
             dual_guidance=False,
         )
-        
-        # 如果有法线图，处理法线图条件并拼接token
-        if normal is not None:
-            print(f"[Pipeline] 处理法线图，形状: {normal.shape}")
-            normal = normal.to(device).to(dtype)
-            
-            # 法线图需要与RGB图相同的处理流程
-            # normal的形状应该是 (B, num_views, 3, H, W)
-            # 需要调整mask的格式（如果有）
-            normal_mask_tensor = None
-            if normal_mask is not None:
-                normal_mask_tensor = normal_mask.to(device).to(dtype)
-            
-            # 通过prepare_image处理normal（与RGB图相同的预处理流程）
-            normal_cond_inputs = self.prepare_image(normal, normal_mask_tensor)
-            normal_image = normal_cond_inputs.pop('image') if 'image' in normal_cond_inputs else normal
-            
-            # 编码法线图（使用与RGB图相同的编码器）
-            # 注意：如果启用了classifier-free guidance，需要确保normal_cond的batch size与cond一致
-            normal_cond = self.encode_cond(
-                image=normal_image,
-                additional_cond_inputs=normal_cond_inputs,
-                do_classifier_free_guidance=do_classifier_free_guidance,
-                dual_guidance=False,
-            )
-            
-            # 将法线图的token拼接到RGB图的token后面（与训练时逻辑一致）
-            for key in cond:
-                if isinstance(cond[key], torch.Tensor):
-                    if key in normal_cond and isinstance(normal_cond[key], torch.Tensor):
-                        # 检查batch size是否匹配
-                        if cond[key].shape[0] != normal_cond[key].shape[0]:
-                            print(f"[Pipeline] 警告: batch size不匹配，cond[{key}]: {cond[key].shape[0]}, normal_cond[{key}]: {normal_cond[key].shape[0]}")
-                            # 如果cond的batch size更大（classifier-free guidance），需要扩展normal_cond
-                            if cond[key].shape[0] == 2 * normal_cond[key].shape[0]:
-                                # 重复normal_cond以匹配batch size
-                                normal_cond[key] = torch.cat([normal_cond[key], normal_cond[key]], dim=0)
-                                print(f"[Pipeline] 已扩展normal_cond[{key}]的batch size到: {normal_cond[key].shape[0]}")
-                            else:
-                                raise RuntimeError(f"无法匹配batch size: cond[{key}].shape[0]={cond[key].shape[0]}, normal_cond[{key}].shape[0]={normal_cond[key].shape[0]}")
-                        
-                        # 在序列维度拼接 (dim=1)
-                        rgb_shape_before = cond[key].shape[1]
-                        cond[key] = torch.cat([cond[key], normal_cond[key]], dim=1)
-                        print(f"[Pipeline] 法线图token已拼接，key={key}, RGB tokens={rgb_shape_before}, Normal tokens={normal_cond[key].shape[1]}, 总tokens={cond[key].shape[1]}, batch_size={cond[key].shape[0]}")
-        
-        # 如果有深度图和controlnet，处理深度条件并注入到cond中
-        if controlnet is not None and depth is not None:
-            print(f"[Pipeline] 使用ControlNet处理深度图，形状: {depth.shape}")
-            depth = depth.to(device).to(dtype)
-            depth_features = controlnet(depth)  # (B, 1, hidden_dim) 或 (B, hidden_dim)
-            
-            # 将深度特征注入到条件中
-            if 'additional' not in cond:
-                cond['additional'] = {}
-            cond['additional']['depth'] = depth_features
-            print(f"[Pipeline] 深度特征已注入，形状: {depth_features.shape}")
-
         batch_size = image.shape[0]
 
         # 5. Prepare timesteps
@@ -878,8 +746,8 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
                     latent_model_input = latents
 
                 # NOTE: we assume model get timesteps ranged from 0 to 1
-                timestep = t.expand(latent_model_input.shape[0]).to(latents.dtype)
-                timestep = timestep / self.scheduler.config.num_train_timesteps
+                timestep = t.expand(latent_model_input.shape[0]).to(
+                    latents.dtype) / self.scheduler.config.num_train_timesteps
                 noise_pred = self.model(latent_model_input, timestep, cond, guidance=guidance)
 
                 if do_classifier_free_guidance:
