@@ -145,10 +145,8 @@ class VectsetVAE(nn.Module):
         else:
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
 
-        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
-        if 'target' in config:
-            config['target'] = config['target'].replace('hy3dgen.shapegen', 'hy3dshape')
-            config['target'] = config['target'].replace('hy3dgen', 'hy3dshape')
+        # 不再进行路径转换，直接使用配置中的路径
+        # hy3dgen.shapegen 和 hy3dshape 都可以直接使用
 
         model_kwargs = config['params']
         model_kwargs.update(kwargs)

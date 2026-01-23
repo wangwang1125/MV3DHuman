@@ -552,10 +552,8 @@ class HunYuanDiTPlain(nn.Module):
         if 'model' in config:
             config = config['model']
 
-        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
-        if 'target' in config:
-            config['target'] = config['target'].replace('hy3dgen.shapegen', 'hy3dshape')
-            config['target'] = config['target'].replace('hy3dgen', 'hy3dshape')
+        # 不再进行路径转换，直接使用配置中的路径
+        # hy3dgen.shapegen 和 hy3dshape 都可以直接使用
 
         model_kwargs = config['params'].copy()  # 复制预训练配置的参数
         # 获取预训练模型的 text_len（用于后续检查）

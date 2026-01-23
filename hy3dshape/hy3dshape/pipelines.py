@@ -110,11 +110,8 @@ def export_to_trimesh(mesh_output):
 
 
 def get_obj_from_str(string, reload=False):
-    # 修复模块路径：将 hy3dgen 替换为 hy3dshape
-    if 'hy3dgen' in string:
-        string = string.replace('hy3dgen.shapegen', 'hy3dshape')
-        string = string.replace('hy3dgen', 'hy3dshape')
-    
+    # 直接使用原始路径，不再进行转换
+    # hy3dgen.shapegen 和 hy3dshape 都可以直接使用
     module, cls = string.rsplit(".", 1)
     if reload:
         module_imp = importlib.import_module(module)
@@ -172,32 +169,8 @@ class Hunyuan3DDiTPipeline:
         else:
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
         # load model
-        # 修复配置文件中的模块路径：将 hy3dgen 替换为 hy3dshape
-        def fix_config_module_path(cfg, depth=0):
-            """将配置中的 hy3dgen 模块路径替换为 hy3dshape（递归修复）"""
-            if depth > 10:  # 防止无限递归
-                return
-            
-            if isinstance(cfg, dict):
-                # 修复 target 字段
-                if 'target' in cfg:
-                    original_target = cfg['target']
-                    if 'hy3dgen' in original_target:
-                        cfg['target'] = original_target.replace('hy3dgen.shapegen', 'hy3dshape')
-                        cfg['target'] = cfg['target'].replace('hy3dgen', 'hy3dshape')
-                        logger.debug(f"修复模块路径: {original_target} -> {cfg['target']}")
-                
-                # 递归修复所有嵌套的字典和列表
-                for key, value in cfg.items():
-                    if isinstance(value, (dict, list)):
-                        fix_config_module_path(value, depth + 1)
-            elif isinstance(cfg, list):
-                for item in cfg:
-                    if isinstance(item, (dict, list)):
-                        fix_config_module_path(item, depth + 1)
-        
-        # 修复所有配置中的模块路径
-        fix_config_module_path(config)
+        # 不再进行路径转换，直接使用配置中的路径
+        # hy3dgen.shapegen 和 hy3dshape 都可以直接使用
         
         model = instantiate_from_config(config['model'])
         model.load_state_dict(ckpt['model'])

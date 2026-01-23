@@ -28,11 +28,6 @@ def get_config_from_file(config_file: str) -> Union[DictConfig, ListConfig]:
 
 
 def get_obj_from_str(string, reload=False):
-    # 修复模块路径：将 hy3dgen 替换为 hy3dshape
-    if 'hy3dgen' in string:
-        string = string.replace('hy3dgen.shapegen', 'hy3dshape')
-        string = string.replace('hy3dgen', 'hy3dshape')
-    
     module, cls = string.rsplit(".", 1)
     if reload:
         module_imp = importlib.import_module(module)
