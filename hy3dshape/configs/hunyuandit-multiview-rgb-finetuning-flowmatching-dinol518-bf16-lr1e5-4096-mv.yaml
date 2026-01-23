@@ -82,7 +82,7 @@ model:
         main_image_encoder:
             type: DinoImageEncoderMV 
             kwargs:
-                version: 'facebook/dinov2-large'
+                version: 'facebook/dinov2-giant'  # 使用 dinov2-giant (1536维) 以匹配预训练模型
                 image_size: 518
                 use_cls_token: true
                 view_num: 4  # Number of input views for DINO encoder
@@ -94,6 +94,7 @@ model:
       use_safetensors: true  # Hunyuan3D-2mv使用safetensors格式
       params:
         input_size: 4096  # VAE token length (must match VAE output)
+        context_dim: 1536  # 使用 1536 维以匹配 dinov2-giant 的输出维度
         with_decoupled_ca: false  # RGB images generate their own tokens via DinoImageEncoderMV
         num_views: 4  # Number of views for the denoiser
         # text_len must match the actual sequence length from DinoImageEncoderMV
