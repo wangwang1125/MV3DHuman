@@ -2801,12 +2801,89 @@ if __name__ == '__main__':
                                             print(f"   将使用预训练模型架构加载权重（可能不完全匹配）")
                                 
                                 # 加载 model (DiT) 权重
-                                # Lightning checkpoint 中保存的键名是 'model.*'，需要去掉前缀
+                                # Lightning checkpoint 中保存的键名可能是 'model.*' (全量微调) 或 'model.base_model.model.*' (LoRA微调)
                                 if hasattr(i23d_worker, 'model') and i23d_worker.model is not None:
+                                    # 检测是否是 LoRA checkpoint (包含 base_model.model. 前缀)
+                                    sample_keys = [k for k in state_dict.keys() if k.startswith('model.')][:5]
+                                    is_lora_checkpoint = any('base_model.model.' in k for k in sample_keys)
+                                    
+                                    if is_lora_checkpoint:
+                                        print(f"\n🔍 检测到 LoRA checkpoint (包含 'base_model.model.' 前缀)")
+                                        print(f"   将先应用 LoRA 配置，然后加载权重")
+                                        
+                                        # 尝试从配置文件读取 LoRA 配置
+                                        lora_config = None
+                                        # 从 args.rgb_lora_path 获取 checkpoint 路径
+                                        ckpt_path_for_config = args.rgb_lora_path if hasattr(args, 'rgb_lora_path') and args.rgb_lora_path else None
+                                        if ckpt_path_for_config and os.path.exists(ckpt_path_for_config):
+                                            # 如果是文件，获取目录；如果是目录，直接使用
+                                            if os.path.isfile(ckpt_path_for_config):
+                                                config_dir = os.path.dirname(ckpt_path_for_config)
+                                            else:
+                                                config_dir = ckpt_path_for_config
+                                            
+                                            config_file = os.path.join(config_dir, 'config.yaml')
+                                            if not os.path.exists(config_file):
+                                                # 尝试在上级目录查找
+                                                config_file = os.path.join(os.path.dirname(config_dir), 'config.yaml')
+                                            
+                                            if os.path.exists(config_file):
+                                                try:
+                                                    import yaml
+                                                    with open(config_file, 'r') as f:
+                                                        config = yaml.safe_load(f)
+                                                    if 'model' in config and 'params' in config['model']:
+                                                        lora_config_dict = config['model']['params'].get('lora_config')
+                                                        if lora_config_dict:
+                                                            from peft import LoraConfig, get_peft_model
+                                                            lora_config = LoraConfig(
+                                                                r=lora_config_dict.get('rank', 16),
+                                                                lora_alpha=lora_config_dict.get('rank', 16),
+                                                                target_modules=lora_config_dict.get('target_modules', ["qkv", "proj"]),
+                                                                lora_dropout=0.0,
+                                                            )
+                                                            print(f"   ✅ 从配置文件读取 LoRA 配置:")
+                                                            print(f"      rank: {lora_config.r}")
+                                                            print(f"      target_modules: {lora_config.target_modules}")
+                                                except Exception as e:
+                                                    print(f"   ⚠️  读取配置文件失败: {e}")
+                                        
+                                        # 如果没有从配置文件读取到，使用默认配置（针对 Hunyuan3DDiT）
+                                        if lora_config is None:
+                                            from peft import LoraConfig, get_peft_model
+                                            lora_config = LoraConfig(
+                                                r=16,
+                                                lora_alpha=16,
+                                                target_modules=["qkv", "proj"],
+                                                lora_dropout=0.0,
+                                            )
+                                            print(f"   ⚠️  使用默认 LoRA 配置 (rank=16, target_modules=['qkv', 'proj'])")
+                                        
+                                        # 应用 LoRA 配置到模型
+                                        try:
+                                            from peft import get_peft_model
+                                            i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
+                                            print(f"   ✅ LoRA 配置已应用到模型")
+                                        except Exception as e:
+                                            print(f"   ❌ 应用 LoRA 配置失败: {e}")
+                                            import traceback
+                                            traceback.print_exc()
+                                            print(f"   ⚠️  将尝试直接加载权重（可能失败）")
+                                    
                                     model_state_dict = {}
                                     for key, value in state_dict.items():
                                         if key.startswith('model.'):
                                             new_key = key[6:]  # 去掉 'model.' 前缀
+                                            # 对于 LoRA checkpoint：
+                                            # - Checkpoint 键名: model.base_model.model.xxx
+                                            # - 去掉 model. 后: base_model.model.xxx
+                                            # - 应用 LoRA 后的模型期望: base_model.model.xxx
+                                            # 所以对于 LoRA，需要保留 base_model.model. 前缀
+                                            # 对于全量微调：
+                                            # - Checkpoint 键名: model.xxx
+                                            # - 去掉 model. 后: xxx
+                                            # - 模型期望: xxx
+                                            # 所以对于全量微调，不需要额外处理
                                             model_state_dict[new_key] = value
                                     
                                     print(f"   提取了 {len(model_state_dict)} 个模型权重（从 'model.*' 键）")
@@ -2840,16 +2917,44 @@ if __name__ == '__main__':
                                                 else:
                                                     print(f"   ✅ 维度匹配，将正常加载")
                                         
+                                        # 对于 LoRA checkpoint，PEFT 会自动处理 base_layer 和 lora_A/lora_B 的键名映射
+                                        # 直接使用 load_state_dict 即可，PEFT 会处理键名转换
                                         missing, unexpected = i23d_worker.model.load_state_dict(model_state_dict, strict=False)
+                                        
+                                        # 过滤掉 LoRA 相关的 unexpected keys（这些是正常的）
+                                        if is_lora_checkpoint and unexpected:
+                                            # LoRA 相关的 unexpected keys 是正常的（如 base_layer, lora_A, lora_B）
+                                            lora_related_unexpected = [k for k in unexpected if 'base_layer' in k or 'lora_A' in k or 'lora_B' in k]
+                                            other_unexpected = [k for k in unexpected if k not in lora_related_unexpected]
+                                            if lora_related_unexpected:
+                                                print(f"  ℹ️  LoRA 相关键名（正常）: {len(lora_related_unexpected)} 个")
+                                            if other_unexpected:
+                                                print(f"  - Unexpected keys (非LoRA): {len(other_unexpected)} (前10个: {other_unexpected[:10]})")
+                                        else:
+                                            if unexpected:
+                                                print(f"  - Unexpected keys: {len(unexpected)} (前10个: {list(unexpected)[:10]})")
+                                        
                                         print(f"\n✅ DiT 模型权重加载完成: {len(model_state_dict)} 个权重")
                                         if missing:
-                                            print(f"  - Missing keys: {len(missing)} (前10个: {list(missing)[:10]})")
-                                        if unexpected:
-                                            print(f"  - Unexpected keys: {len(unexpected)} (前10个: {list(unexpected)[:10]})")
+                                            # 对于 LoRA，missing keys 可能包括基础模型的权重（如果基础模型被冻结）
+                                            # 检查是否是基础模型权重（不包含 lora_A, lora_B, base_layer）
+                                            if is_lora_checkpoint:
+                                                base_model_missing = [k for k in missing if 'base_layer' not in k and 'lora_A' not in k and 'lora_B' not in k]
+                                                lora_missing = [k for k in missing if k not in base_model_missing]
+                                                if base_model_missing:
+                                                    print(f"  ⚠️  Missing keys (基础模型，可能被冻结): {len(base_model_missing)} (前10个: {base_model_missing[:10]})")
+                                                if lora_missing:
+                                                    print(f"  ⚠️  Missing keys (LoRA权重): {len(lora_missing)} (前10个: {lora_missing[:10]})")
+                                            else:
+                                                print(f"  - Missing keys: {len(missing)} (前10个: {list(missing)[:10]})")
                                         
-                                        # 计算匹配率
+                                        # 计算匹配率（排除 LoRA 相关的 unexpected keys）
                                         total_expected = len(expected_keys)
-                                        matched = total_expected - len(missing)
+                                        if is_lora_checkpoint and unexpected:
+                                            # 对于 LoRA，只计算实际匹配的权重数量
+                                            matched = total_expected - len(missing)
+                                        else:
+                                            matched = total_expected - len(missing)
                                         if total_expected > 0:
                                             match_rate = matched / total_expected * 100
                                             print(f"  - 匹配率: {matched}/{total_expected} ({match_rate:.1f}%)")

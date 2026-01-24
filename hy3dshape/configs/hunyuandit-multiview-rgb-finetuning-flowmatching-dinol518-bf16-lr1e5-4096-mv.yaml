@@ -64,9 +64,10 @@ model:
 
     # LoRA Configuration - DISABLED for full fine-tuning
     # All DiT model weights will be trainable
+    # Note: For Hunyuan3DDiT, use ["qkv", "proj"] 
     # lora_config:
-    #   rank: 8
-    #   target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+    #   rank: 16
+    #   target_modules: ["qkv", "proj", "img_mlp.0", "img_mlp.2", "txt_mlp.0", "txt_mlp.2"]
 
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
