@@ -1868,47 +1868,50 @@ if __name__ == '__main__':
 
     SUPPORTED_FORMATS = ['glb', 'obj', 'ply', 'stl']
 
+    # 🚫 Texture generation disabled - 已禁用纹理生成功能
     HAS_TEXTUREGEN = False
-    if not args.disable_tex:
-        try:
-            # Apply torchvision fix before importing basicsr/RealESRGAN
-            print("Applying torchvision compatibility fix for texture generation...")
-            try:
-                from torchvision_fix import apply_fix
-                fix_result = apply_fix()
-                if not fix_result:
-                    print("Warning: Torchvision fix may not have been applied successfully")
-            except Exception as fix_error:
-                print(f"Warning: Failed to apply torchvision fix: {fix_error}")
-            
-            # from hy3dgen.texgen import Hunyuan3DPaintPipeline
-            # texgen_worker = Hunyuan3DPaintPipeline.from_pretrained(args.texgen_model_path)
-            # if args.low_vram_mode:
-            #     texgen_worker.enable_model_cpu_offload()
+    print("⚠️ Texture generation is disabled - 纹理生成功能已禁用")
+    
+    # if not args.disable_tex:
+    #     try:
+    #         # Apply torchvision fix before importing basicsr/RealESRGAN
+    #         print("Applying torchvision compatibility fix for texture generation...")
+    #         try:
+    #             from torchvision_fix import apply_fix
+    #             fix_result = apply_fix()
+    #             if not fix_result:
+    #                 print("Warning: Torchvision fix may not have been applied successfully")
+    #         except Exception as fix_error:
+    #             print(f"Warning: Failed to apply torchvision fix: {fix_error}")
+    #         
+    #         # from hy3dgen.texgen import Hunyuan3DPaintPipeline
+    #         # texgen_worker = Hunyuan3DPaintPipeline.from_pretrained(args.texgen_model_path)
+    #         # if args.low_vram_mode:
+    #         #     texgen_worker.enable_model_cpu_offload()
 
-            from hy3dpaint.textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
-            conf = Hunyuan3DPaintConfig(max_num_view=8, resolution=768)
-            conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
-            conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-            conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
-            tex_pipeline = Hunyuan3DPaintPipeline(conf)
-        
-            # Not help much, ignore for now.
-            # if args.compile:
-            #     texgen_worker.models['delight_model'].pipeline.unet.compile()
-            #     texgen_worker.models['delight_model'].pipeline.vae.compile()
-            #     texgen_worker.models['multiview_model'].pipeline.unet.compile()
-            #     texgen_worker.models['multiview_model'].pipeline.vae.compile()
-            
-            HAS_TEXTUREGEN = True
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"Error loading texture generator: {e}")
-            print("Failed to load texture generator.")
-            print('Please try to install requirements by following README.md')
-            HAS_TEXTUREGEN = False
+    #         from hy3dpaint.textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+    #         conf = Hunyuan3DPaintConfig(max_num_view=8, resolution=768)
+    #         conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+    #         conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+    #         conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
+    #         tex_pipeline = Hunyuan3DPaintPipeline(conf)
+    #     
+    #         # Not help much, ignore for now.
+    #         # if args.compile:
+    #         #     texgen_worker.models['delight_model'].pipeline.unet.compile()
+    #         #     texgen_worker.models['delight_model'].pipeline.vae.compile()
+    #         #     texgen_worker.models['multiview_model'].pipeline.unet.compile()
+    #         #     texgen_worker.models['multiview_model'].pipeline.vae.compile()
+    #         
+    #         HAS_TEXTUREGEN = True
+    #         
+    #     except Exception as e:
+    #         import traceback
+    #         traceback.print_exc()
+    #         print(f"Error loading texture generator: {e}")
+    #         print("Failed to load texture generator.")
+    #         print('Please try to install requirements by following README.md')
+    #         HAS_TEXTUREGEN = False
 
     HAS_T2I = True
     if args.enable_t23d:
@@ -2033,14 +2036,29 @@ if __name__ == '__main__':
                                         new_key = key[6:]  # 去掉'model.'前缀
                                         model_state_dict[new_key] = value
                                 
+                                # 🔍 从checkpoint中自动检测LoRA rank
+                                detected_rank = None
+                                for key, value in model_state_dict.items():
+                                    if 'lora_A' in key and 'weight' in key:
+                                        detected_rank = value.shape[0]
+                                        print(f"从checkpoint检测到LoRA rank: {detected_rank}")
+                                        print(f"  检测来源: {key}, shape: {value.shape}")
+                                        break
+                                
+                                # 如果无法检测，使用默认值
+                                if detected_rank is None:
+                                    detected_rank = 32
+                                    print(f"⚠️ 无法从checkpoint检测LoRA rank，使用默认值: {detected_rank}")
+                                
                                 # 先应用LoRA配置到基础模型
                                 from peft import LoraConfig, get_peft_model
                                 lora_config = LoraConfig(
-                                    r=8,
-                                    lora_alpha=8,
+                                    r=detected_rank,
+                                    lora_alpha=detected_rank,
                                     target_modules=["to_q", "to_k", "to_v", "to_out.0"],
                                     lora_dropout=0.0,
                                 )
+                                print(f"✅ 使用深度LoRA配置: rank={detected_rank}, alpha={detected_rank}")
                                 i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
                                 
                                 # 加载包含LoRA的权重
@@ -2240,14 +2258,29 @@ if __name__ == '__main__':
                                             new_key = key[6:]  # 去掉'model.'前缀
                                             model_state_dict[new_key] = value
                                     
+                                    # 🔍 从checkpoint中自动检测LoRA rank
+                                    detected_rank = None
+                                    for key, value in model_state_dict.items():
+                                        if 'lora_A' in key and 'weight' in key:
+                                            detected_rank = value.shape[0]
+                                            print(f"从checkpoint检测到LoRA rank: {detected_rank}")
+                                            print(f"  检测来源: {key}, shape: {value.shape}")
+                                            break
+                                    
+                                    # 如果无法检测，使用默认值
+                                    if detected_rank is None:
+                                        detected_rank = 32
+                                        print(f"⚠️ 无法从checkpoint检测LoRA rank，使用默认值: {detected_rank}")
+                                    
                                     # 先应用LoRA配置到基础模型
                                     from peft import LoraConfig, get_peft_model
                                     lora_config = LoraConfig(
-                                        r=8,
-                                        lora_alpha=8,
+                                        r=detected_rank,
+                                        lora_alpha=detected_rank,
                                         target_modules=["to_q", "to_k", "to_v", "to_out.0"],
                                         lora_dropout=0.0,
                                     )
+                                    print(f"✅ 使用法线LoRA配置: rank={detected_rank}, alpha={detected_rank}")
                                     i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
                                     
                                     # 加载包含LoRA的权重
@@ -2369,14 +2402,29 @@ if __name__ == '__main__':
                                                 new_key = key[6:]  # 去掉'model.'前缀
                                                 model_state_dict[new_key] = value
                                         
+                                        # 🔍 从checkpoint中自动检测LoRA rank
+                                        detected_rank = None
+                                        for key, value in model_state_dict.items():
+                                            if 'lora_A' in key and 'weight' in key:
+                                                detected_rank = value.shape[0]
+                                                print(f"从checkpoint检测到LoRA rank: {detected_rank}")
+                                                print(f"  检测来源: {key}, shape: {value.shape}")
+                                                break
+                                        
+                                        # 如果无法检测，使用默认值
+                                        if detected_rank is None:
+                                            detected_rank = 8
+                                            print(f"⚠️ 无法从checkpoint检测LoRA rank，使用默认值: {detected_rank}")
+                                        
                                         # 先应用LoRA配置到基础模型
                                         from peft import LoraConfig, get_peft_model
                                         lora_config = LoraConfig(
-                                            r=8,
-                                            lora_alpha=8,
+                                            r=detected_rank,
+                                            lora_alpha=detected_rank,
                                             target_modules=["to_q", "to_k", "to_v", "to_out.0"],
                                             lora_dropout=0.0,
                                         )
+                                        print(f"✅ 使用LoRA配置: rank={detected_rank}, alpha={detected_rank}")
                                         i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
                                         
                                         # 加载包含LoRA的权重
