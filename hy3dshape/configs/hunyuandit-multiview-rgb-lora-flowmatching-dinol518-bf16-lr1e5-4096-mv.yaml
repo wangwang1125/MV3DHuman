@@ -76,7 +76,7 @@ model:
         main_image_encoder:
             type: DinoImageEncoderMV 
             kwargs:
-                version: 'facebook/dinov2-large'
+                version: 'facebook/dinov2-giant'
                 image_size: 518
                 use_cls_token: true
                 view_num: 4  # Number of input views for DINO encoder

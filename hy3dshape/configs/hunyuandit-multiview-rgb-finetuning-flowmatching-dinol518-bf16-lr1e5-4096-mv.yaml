@@ -82,13 +82,13 @@ model:
         main_image_encoder:
             type: DinoImageEncoderMV 
             kwargs:
-                version: 'facebook/dinov2-large'
+                version: 'facebook/dinov2-giant'
                 image_size: 518
                 use_cls_token: true
                 view_num: 4  # Number of input views for DINO encoder
 
     denoiser_cfg:
-      target: hy3dshape.models.denoisers.hunyuandit.hunyuan3ddit
+      target: hy3dshape.models.denoisers.hunyuan3ddit.Hunyuan3DDiT
       from_pretrained: tencent/Hunyuan3D-2mv  # Load pretrained weights from Hunyuan3D-2mv
       subfolder: hunyuan3d-dit-v2-mv  # 使用Hunyuan3D-2mv作为预训练模型
       use_safetensors: true  # Hunyuan3D-2mv使用safetensors格式
