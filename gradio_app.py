@@ -2364,11 +2364,17 @@ if __name__ == '__main__':
                                                 model_state_dict[new_key] = value
                                         
                                         # 先应用LoRA配置到基础模型
+                                        # mv 使用 Hunyuan3DDiT，target 为 qkv/proj/linear1/linear2；非 mv 为 to_q/to_k/to_v/to_out.0
                                         from peft import LoraConfig, get_peft_model
+                                        _lora_targets = (
+                                            ["qkv", "proj", "linear1", "linear2"]
+                                            if MULTIVIEW_RGB_MODE else
+                                            ["to_q", "to_k", "to_v", "to_out.0"]
+                                        )
                                         lora_config = LoraConfig(
                                             r=8,
                                             lora_alpha=8,
-                                            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                            target_modules=_lora_targets,
                                             lora_dropout=0.0,
                                         )
                                         i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
