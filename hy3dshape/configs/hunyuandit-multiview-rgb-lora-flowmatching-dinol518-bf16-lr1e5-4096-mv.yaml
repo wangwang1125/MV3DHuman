@@ -1,4 +1,4 @@
-name: "HunyuanDiT Multi-View RGB LoRA (from Hunyuan3D-2mv); VAE: 4096 token length; ImageEncoder: DINO-v2 Large; ImageSize: 518; Views: 4 (front/right/back/left)"
+name: "HunyuanDiT Multi-View RGB LoRA (from Hunyuan3D-2mv); VAE: 3072 tokens (v2-0); ImageEncoder: DINO-v2 Large; ImageSize: 518; Views: 4 (front/right/back/left)"
 # Multi-View LoRA fine-tuning with RGB image condition via DinoImageEncoderMV
 # RGB images from 4 views are processed to generate tokens for cross-attention
 # Uses Hunyuan3D-2mv as pretrained model
@@ -54,7 +54,7 @@ model:
     first_stage_key: "surface"
     cond_stage_key: "image"
     scale_by_std: false
-    z_scale_factor: &z_scale_factor 1.0039506158752403
+    z_scale_factor: &z_scale_factor 0.9990943042622529  # 与官方 2mv VAE (v2-0) 一致
     torch_compile: false
 
     # LoRA Configuration (for Hunyuan3DDiT: qkv/proj in SelfAttention, linear1/linear2 in SingleStreamBlock)
@@ -64,9 +64,9 @@ model:
 
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
-      from_pretrained: tencent/Hunyuan3D-2.1  # VAE使用Hunyuan3D-2.1（mv模型可能没有单独的VAE）
-      subfolder: hunyuan3d-vae-v2-1  # VAE的subfolder
-      use_safetensors: false  # VAE使用ckpt格式
+      from_pretrained: tencent/Hunyuan3D-2  # 与官方 2mv 一致
+      subfolder: hunyuan3d-vae-v2-0  # 2mv 使用的 VAE，num_latents=3072
+      use_safetensors: false
 
     cond_stage_config:
       target: hy3dshape.models.conditioner.SingleImageEncoder
@@ -87,14 +87,11 @@ model:
       subfolder: hunyuan3d-dit-v2-mv  # 使用Hunyuan3D-2mv作为预训练模型
       use_safetensors: true  # Hunyuan3D-2mv使用safetensors格式
       params:
-        input_size: 4096  # VAE token length (must match VAE output)
-        with_decoupled_ca: false  # RGB images generate their own tokens via DinoImageEncoderMV
-        num_views: 4  # Number of views for the denoiser
-        # text_len must match the actual sequence length from DinoImageEncoderMV
-        # For 4 views with image_size=518 and use_cls_token=True:
-        # Each view: (518//14)^2 + 1 = 1369 + 1 = 1370 tokens
-        # 4 views: 1370 * 4 = 5480 tokens
-        text_len: 5480  # Override pretrained text_len to match multi-view sequence length
+        input_size: 3072  # 与官方 2mv VAE (num_latents) 一致
+        with_decoupled_ca: false
+        num_views: 4
+        # 4 views × (1370 tokens/view) = 5480
+        text_len: 5480
         
     scheduler_cfg:
       transport:
@@ -130,7 +127,9 @@ model:
 
     image_processor_cfg:
       target: hy3dshape.preprocessors.MVImageProcessorV2
-      params: {}
+      params:
+        size: 512
+        border_ratio: 0.15
 
 callbacks:
     logger:
