@@ -88,7 +88,7 @@ model:
                 view_num: 4  # Number of input views for DINO encoder
 
     denoiser_cfg:
-      target: hy3dshape.models.denoisers.hunyuandit.HunYuanDiTPlain
+      target: hy3dshape.models.denoisers.hunyuandit.hunyuan3ddit
       from_pretrained: tencent/Hunyuan3D-2mv  # Load pretrained weights from Hunyuan3D-2mv
       subfolder: hunyuan3d-dit-v2-mv  # 使用Hunyuan3D-2mv作为预训练模型
       use_safetensors: true  # Hunyuan3D-2mv使用safetensors格式
