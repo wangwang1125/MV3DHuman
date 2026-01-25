@@ -39,9 +39,9 @@ dataset:
     #! Normal loading - DISABLED for RGB-only training
     load_normal: false
 
-    #! Point cloud sampling
-    pc_size: &pc_size 81920
-    pc_sharpedge_size: &pc_sharpedge_size 0
+    #! Point cloud sampling（与官方 v2-0-withencoder 一致）
+    pc_size: &pc_size 30720
+    pc_sharpedge_size: &pc_sharpedge_size 30720
     sharpedge_label: &sharpedge_label true
     return_normal: true
 

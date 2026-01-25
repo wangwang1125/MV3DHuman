@@ -262,7 +262,7 @@ def load_multiview_depths(depth_files_dict, target_size=518, num_views=None):
     加载多视图深度图（适用于多视图深度训练模式）
     
     Args:
-        depth_files_dict: 包含各个视图深度图文件的字典 {'front': file, 'right': file, 'back': file, 'left': file}
+        depth_files_dict: 包含各个视图深度图文件的字典 {'front': file, 'left': file, 'back': file, 'right': file}
         target_size: 目标图像尺寸
         num_views: 期望的视图数量，如果为None则使用实际提供的视图数量
     
@@ -272,14 +272,14 @@ def load_multiview_depths(depth_files_dict, target_size=518, num_views=None):
     """
     # 根据num_views参数确定视图顺序
     if num_views == 2:
-        # 双视图模式：front, right
-        view_order = ['front', 'right']
+        # 双视图模式：front, left
+        view_order = ['front', 'left']
     elif num_views == 3:
-        # 三视图模式：front, right, back
-        view_order = ['front', 'right', 'back']
+        # 三视图模式：front, left, back
+        view_order = ['front', 'left', 'back']
     else:
-        # 默认四视图模式：front, right, back, left
-        view_order = ['front', 'right', 'back', 'left']
+        # 默认四视图模式：front, left, back, right
+        view_order = ['front', 'left', 'back', 'right']
     
     depth_tensors = []
     
@@ -324,14 +324,14 @@ def load_multiview_normals(normal_files_dict, target_size=518, num_views=None):
     
     # 根据num_views参数确定视图顺序
     if num_views == 2:
-        # 双视图模式：front, right
-        view_order = ['front', 'right']
+        # 双视图模式：front, left
+        view_order = ['front', 'left']
     elif num_views == 3:
-        # 三视图模式：front, right, back
-        view_order = ['front', 'right', 'back']
+        # 三视图模式：front, left, back
+        view_order = ['front', 'left', 'back']
     else:
-        # 默认四视图模式：front, right, back, left
-        view_order = ['front', 'right', 'back', 'left']
+        # 默认四视图模式：front, left, back, right
+        view_order = ['front', 'left', 'back', 'right']
     
     normal_tensors = []
     mask_tensors = []
