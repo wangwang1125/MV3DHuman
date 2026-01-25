@@ -65,8 +65,11 @@ model:
     first_stage_config:
       target: hy3dshape.models.autoencoders.ShapeVAE
       from_pretrained: tencent/Hunyuan3D-2  # 与官方 2mv 一致
-      subfolder: hunyuan3d-vae-v2-0  # 2mv 使用的 VAE，num_latents=3072
+      subfolder: hunyuan3d-vae-v2-0-withencoder  # 训练需 encoder；与 v2-0 同 3072 latents、scale_factor
       use_safetensors: false
+      params:
+        pc_size: *pc_size
+        pc_sharpedge_size: *pc_sharpedge_size
 
     cond_stage_config:
       target: hy3dshape.models.conditioner.SingleImageEncoder
