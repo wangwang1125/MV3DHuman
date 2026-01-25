@@ -2473,7 +2473,7 @@ if __name__ == '__main__':
                         
                         # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
                         new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
+                            version='facebook/dinov2-giant',
                             image_size=518,
                             use_cls_token=True,
                             view_num=args.num_views
@@ -2513,7 +2513,7 @@ if __name__ == '__main__':
                         
                         # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
                         new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
+                            version='facebook/dinov2-giant',
                             image_size=518,
                             use_cls_token=True,
                             view_num=args.num_views
@@ -2553,7 +2553,7 @@ if __name__ == '__main__':
                         
                         # 创建新的DinoImageEncoderMV encoder，使用检测到的视图数量
                         new_encoder = DinoImageEncoderMV(
-                            version='facebook/dinov2-large',
+                            version='facebook/dinov2-giant',
                             image_size=518,
                             use_cls_token=True,
                             view_num=args.num_views
