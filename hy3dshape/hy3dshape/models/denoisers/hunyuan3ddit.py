@@ -14,12 +14,15 @@
 
 import os
 import math
+import yaml
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
 import torch
 from torch import Tensor, nn
 from einops import rearrange
+
+from ...utils import logger, synchronize_timer, smart_load_model
 
 # set up attention backend
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
@@ -282,6 +285,106 @@ class LastLayer(nn.Module):
 
 
 class Hunyuan3DDiT(nn.Module):
+
+    @classmethod
+    @synchronize_timer('Hunyuan3DDiT Model Loading')
+    def from_single_file(
+        cls,
+        ckpt_path: str,
+        config_path: str,
+        device: str = 'cuda',
+        dtype: Optional[torch.dtype] = None,
+        use_safetensors: bool = False,
+        **kwargs,
+    ):
+        if dtype is None:
+            dtype = torch.float16
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        if config is None:
+            config = {}
+        if isinstance(config.get('model'), dict):
+            config = config['model']
+        params = config.get('params')
+        model_kwargs = dict(params) if isinstance(params, dict) else {}
+        model_kwargs.update(kwargs)
+        for old_k, new_k in [('context_dim', 'context_in_dim')]:
+            if old_k in model_kwargs and new_k not in model_kwargs:
+                model_kwargs[new_k] = model_kwargs.pop(old_k)
+        model_kwargs.pop('ckpt_path', None)
+        model_kwargs.pop('text_len', None)
+        model_kwargs.pop('input_size', None)
+        model_kwargs.pop('num_views', None)
+        model_kwargs.pop('with_decoupled_ca', None)
+
+        logger.info(f'Loading Hunyuan3DDiT from {ckpt_path}')
+        if use_safetensors:
+            import safetensors.torch
+            ckpt = safetensors.torch.load_file(ckpt_path, device='cpu')
+        else:
+            ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+
+        if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+            state_dict = ckpt['state_dict']
+        elif isinstance(ckpt, dict) and 'model' in ckpt and isinstance(ckpt['model'], dict):
+            state_dict = ckpt['model']
+        else:
+            state_dict = ckpt
+
+        filtered = {}
+        for k, v in state_dict.items():
+            key = k
+            if key.startswith('_forward_module.'):
+                key = key.replace('_forward_module.', '')
+            if key.startswith('model.'):
+                key = key[6:]
+            filtered[key] = v
+        state_dict = filtered
+
+        model = cls(**model_kwargs)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            logger.warning(f'Hunyuan3DDiT missing keys: {len(missing)}')
+            for key in missing[:10]:
+                logger.warning(f'  - {key}')
+            if len(missing) > 10:
+                logger.warning(f'  ... and {len(missing) - 10} more')
+        if unexpected:
+            logger.warning(f'Hunyuan3DDiT unexpected keys: {len(unexpected)}')
+            for key in unexpected[:10]:
+                logger.warning(f'  - {key}')
+            if len(unexpected) > 10:
+                logger.warning(f'  ... and {len(unexpected) - 10} more')
+        if device is not None:
+            model = model.to(device=device, dtype=dtype)
+        return model
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_path: str,
+        device: str = 'cuda',
+        dtype: Optional[torch.dtype] = None,
+        use_safetensors: bool = False,
+        variant: str = 'fp16',
+        subfolder: str = 'hunyuan3d-dit-v2-mv',
+        **kwargs,
+    ):
+        config_path, ckpt_path = smart_load_model(
+            model_path,
+            subfolder=subfolder,
+            use_safetensors=use_safetensors,
+            variant=variant,
+        )
+        return cls.from_single_file(
+            ckpt_path,
+            config_path,
+            device=device,
+            dtype=dtype,
+            use_safetensors=use_safetensors,
+            **kwargs,
+        )
+
     def __init__(
         self,
         in_channels: int = 64,
