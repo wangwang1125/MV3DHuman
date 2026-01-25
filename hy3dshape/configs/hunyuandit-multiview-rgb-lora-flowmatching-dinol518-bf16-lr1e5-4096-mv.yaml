@@ -10,8 +10,8 @@ training:
   base_lr: 1e-5
   gradient_clip_val: 1.0
   gradient_clip_algorithm: "norm"
-  every_n_train_steps: 2000
-  val_check_interval: 1500
+  every_n_train_steps: 200
+  val_check_interval: 150
   limit_val_batches: 16
 
 dataset:
@@ -27,7 +27,7 @@ dataset:
     val_data_list: tools/mini_mv_testset/preprocessed
 
     #! Multi-view configuration
-    multiview_indices: [0, 1, 2, 3]  # 前(0°), 右(90°), 后(180°), 左(270°)四个视图
+    multiview_indices: [0, 1, 2, 3]  # 前(0°), 左(90°), 后(180°), 右(270°)四个视图
     # normal_fusion_strategy not needed for RGB-only training
 
     #! Image loading
@@ -40,8 +40,8 @@ dataset:
     load_normal: false
 
     #! Point cloud sampling（与官方 v2-0-withencoder 一致）
-    pc_size: &pc_size 30720
-    pc_sharpedge_size: &pc_sharpedge_size 30720
+    pc_size: &pc_size 81920
+    pc_sharpedge_size: &pc_sharpedge_size 0
     sharpedge_label: &sharpedge_label true
     return_normal: true
 
@@ -59,7 +59,7 @@ model:
 
     # LoRA Configuration (for Hunyuan3DDiT: qkv/proj in SelfAttention, linear1/linear2 in SingleStreamBlock)
     lora_config:
-      rank: 8
+      rank: 32
       target_modules: ["qkv", "proj", "linear1", "linear2"]
 
     first_stage_config:
@@ -131,8 +131,8 @@ model:
     image_processor_cfg:
       target: hy3dshape.preprocessors.MVImageProcessorV2
       params:
-        size: 512
-        border_ratio: 0.15
+        size: 518
+        border_ratio: 0
 
 callbacks:
     logger:
