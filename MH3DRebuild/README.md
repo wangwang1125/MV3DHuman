@@ -24,7 +24,17 @@ pip install -r requirements.txt
 ## 目录约定
 
 - **confdata/input_data**：四视图图像目录，须包含 `front`、`left`、`back`、`right` 对应图像（如 `front.jpg`、`left.png` 等，支持 `.jpg` / `.png`）。
-- **confdata/models**：可选；存放 LoRA `.ckpt` 或 PEFT `step_*` 目录。若不提供，则自动在 `hy3dshape/output_folder` 等路径查找；均未找到则使用基础 Hunyuan3D-2mv。
+- **confdata/models**：模型根目录（`HY3DGEN_MODELS` 指向此处）。**基础模型**须按下列结构放置，否则会报 `Model file ... not found`：
+  ```
+  confdata/models/
+  └── tencent/
+      └── Hunyuan3D-2mv/
+          └── hunyuan3d-dit-v2-mv/
+              ├── config.yaml
+              └── model.fp16.ckpt
+  ```
+  可将 HuggingFace 下载的 `tencent/Hunyuan3D-2mv` 整包放到 `confdata/models/` 下，或从已有缓存拷贝对应子目录。  
+  **LoRA**：在 `confdata/models/` 下放置 `.ckpt` 或 `step_*` 目录，会优先加载；否则在 `hy3dshape/output_folder` 等路径查找。
 
 ## 编译、测试与打包
 
@@ -60,7 +70,7 @@ MH3DRebuild/
 ├── hy3dshape/          # 已拷贝，推理所需
 ├── confdata/
 │   ├── input_data/     # front, left, back, right 图像
-│   └── models/         # 可选 LoRA
+│   └── models/         # 基础模型 tencent/Hunyuan3D-2mv/... + 可选 LoRA
 └── script/
     ├── info.py
     ├── main.py

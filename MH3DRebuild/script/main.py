@@ -2,13 +2,12 @@
 MH3DRebuild: Multi-view RGB 3D reconstruction with MV LoRA.
 Entry: parse args, load pipeline+LoRA, run inference, export mesh.
 '''
-from __future__ import annotations
-
 import os
 import sys
 import time
 import json
 import glob
+from typing import Optional
 
 # Project root = MH3DRebuild (contains hy3dshape, torchvision_fix, script, confdata)
 def _find_project_root():
@@ -28,8 +27,10 @@ def _find_project_root():
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 _PROJECT_ROOT = _find_project_root()
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+_HY3DSHAPE_ROOT = os.path.join(_PROJECT_ROOT, 'hy3dshape')
+for p in (_HY3DSHAPE_ROOT, _PROJECT_ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 try:
     from torchvision_fix import apply_fix
@@ -68,7 +69,7 @@ def parse_option():
         sys.exit(0)
 
 
-def resolve_lora_path(models_dir: str) -> str | None:
+def resolve_lora_path(models_dir: str) -> Optional[str]:
     """Resolve LoRA path: prefer models_dir, then mv finetuning/lora dirs. Returns None if not found."""
     models_dir = os.path.abspath(models_dir)
 
@@ -158,10 +159,13 @@ def load_images(input_data_dir: str) -> dict[str, Image.Image]:
     return out
 
 
-def load_pipeline_and_lora(device: str, rgb_lora_path: str | None):
+def load_pipeline_and_lora(device: str, models_dir: str, rgb_lora_path: Optional[str]):
     from hy3dshape import Hunyuan3DDiTFlowMatchingPipeline
     from hy3dshape.preprocessors import MVImageProcessorV2
     from hy3dshape.models.conditioner import DinoImageEncoderMV
+
+    models_root = os.path.abspath(models_dir)
+    os.environ['HY3DGEN_MODELS'] = models_root
 
     model_path = 'tencent/Hunyuan3D-2mv'
     subfolder = 'hunyuan3d-dit-v2-mv'
@@ -292,7 +296,7 @@ if __name__ == '__main__':
     else:
         print('No LoRA found, using base Hunyuan3D-2mv')
 
-    pipeline = load_pipeline_and_lora(device, rgb_lora_path)
+    pipeline = load_pipeline_and_lora(device, models_dir, rgb_lora_path)
     image = load_images(input_data)
     mesh = run_inference(pipeline, image, device)
     os.makedirs(os.path.dirname(output_mesh) or '.', exist_ok=True)

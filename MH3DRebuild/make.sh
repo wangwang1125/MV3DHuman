@@ -1,6 +1,6 @@
 #!/bin/bash
 #---------------------------------- 需要配置 -----------------------------------#
-CONDA_ENV_NAME="mh3dr"
+CONDA_ENV_NAME="python310"
 MAIN_PATH="script/main.py"
 #------------------------------ END of 需要配置 --------------------------------#
 
@@ -34,9 +34,17 @@ elif [ "$cmd" = "build" ];then
     stickytape "$MAIN_PATH" > "$BUILD_PATH/exec.py"
 
     echo "3. 使用 py_compile 将脚本转化为 pyc 二进制格式 $CONDA_PATH"
-    source $CONDA_PATH/../../bin/activate $CONDA_PATH
-    python -m py_compile "$BUILD_PATH/exec.py"
+    PYTHON_BIN="${CONDA_PATH}/bin/python"
+    if [ ! -x "$PYTHON_BIN" ]; then
+        echo -e "\e[31m未找到 conda 环境 python: $PYTHON_BIN\e[0m"
+        exit 1
+    fi
+    "$PYTHON_BIN" -m py_compile "$BUILD_PATH/exec.py"
     exec_py=$(ls "$BUILD_PATH/__pycache__"/exec.*.pyc 2>/dev/null | head -n 1)
+    if [ -z "$exec_py" ] || [ ! -f "$exec_py" ]; then
+        echo -e "\e[31mpy_compile 未生成 pyc，请检查 exec.py 语法\e[0m"
+        exit 1
+    fi
     mv "$exec_py" "$BIN_PATH/exec"
 
 elif [ "$cmd" = "test" ];then
@@ -45,16 +53,16 @@ elif [ "$cmd" = "test" ];then
         echo -e "\e[31m二进制程序 \"$BIN_PATH/exec\"  不存在，请运行 \"$0 build\" 构建！ \e[0m"
         exit 1
     fi
-    source $CONDA_PATH/../../bin/activate $CONDA_PATH
+    PYTHON_BIN="${CONDA_PATH}/bin/python"
     echo "版本测试"
-    time python "$BIN_PATH/exec" -v
+    time "$PYTHON_BIN" "$BIN_PATH/exec" -v
     echo "运行测试"
     mkdir -p "$TEST_OUTPUT"
 
 #---------------------------------- 需要配置 -----------------------------------#
     key_output="$TEST_OUTPUT/output_mesh.glb"
     key_check_file=$key_output
-    time python "$BIN_PATH/exec" \
+    time "$PYTHON_BIN" "$BIN_PATH/exec" \
         "$CONFDATA_DIR/input_data" \
         "$CONFDATA_DIR/models" \
         "$key_output"
@@ -99,8 +107,7 @@ elif [ "$cmd" = "pack" ];then
     cp "$BIN_PATH/exec" "$PACK_DIR/exec"
 
     echo "Project info:"
-    source $CONDA_PATH/../../bin/activate $CONDA_PATH
-    python "$PACK_DIR/exec" -v
+    "${CONDA_PATH}/bin/python" "$PACK_DIR/exec" -v
     echo "Pack to:"
     echo "$PACK_DIR"
 else
