@@ -164,9 +164,6 @@ def load_pipeline_and_lora(device: str, models_dir: str, rgb_lora_path: Optional
     from hy3dshape.preprocessors import MVImageProcessorV2
     from hy3dshape.models.conditioner import DinoImageEncoderMV
 
-    models_root = os.path.abspath(models_dir)
-    os.environ['HY3DGEN_MODELS'] = models_root
-
     model_path = 'tencent/Hunyuan3D-2mv'
     subfolder = 'hunyuan3d-dit-v2-mv'
     num_views = 4
