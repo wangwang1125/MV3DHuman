@@ -331,24 +331,53 @@ class Hunyuan3DDiT(nn.Module):
         else:
             state_dict = ckpt
 
-        filtered = {}
+        # 只处理 model.* 开头的键（DiT模型的权重）
+        # conditioner.* 和 vae.* 等权重会在 Diffuser 中单独加载
+        processed_state_dict = {}
+        model_keys_count = 0
         for k, v in state_dict.items():
             key = k
             if key.startswith('_forward_module.'):
                 key = key.replace('_forward_module.', '')
+            # 只处理 model.* 开头的键，忽略 conditioner.*, vae.* 等
             if key.startswith('model.'):
-                key = key[6:]
-            filtered[key] = v
-        state_dict = filtered
+                key = key[6:]  # 去掉 'model.' 前缀
+                processed_state_dict[key] = v
+                model_keys_count += 1
+            # 如果键不以 model., conditioner., vae. 等前缀开头，可能是直接的DiT权重
+            elif not any(key.startswith(prefix) for prefix in ['conditioner.', 'first_stage_model.', 'vae.', 'cond_stage_model.']):
+                processed_state_dict[key] = v
+
+        # 统计预训练 checkpoint 中的 DiT 权重
+        total_pretrained_params = sum(v.numel() for v in processed_state_dict.values())
+        logger.info(f"Extracted {len(processed_state_dict)} DiT model weights from checkpoint (from {model_keys_count} 'model.*' keys)")
+        logger.info(f"  Total DiT parameters in checkpoint: {total_pretrained_params:,}")
+        if len(processed_state_dict) > 0:
+            sample_keys = list(processed_state_dict.keys())[:5]
+            logger.info(f"Sample DiT model keys: {sample_keys}")
 
         model = cls(**model_kwargs)
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        # 统计模型实际参数数量（加载前）
+        model_params_before = sum(p.numel() for p in model.parameters())
+        model_buffers_before = sum(b.numel() for b in model.buffers())
+        logger.info(f"  DiT model total parameters (before loading): {model_params_before:,}")
+        logger.info(f"  DiT model total buffers (before loading): {model_buffers_before:,}")
+        
+        # 直接使用 load_state_dict，strict=False 会自动忽略不匹配的键
+        missing, unexpected = model.load_state_dict(processed_state_dict, strict=False)
+        
+        # 统计实际加载的参数数量
+        loaded_params = sum(v.numel() for k, v in processed_state_dict.items() if k not in missing)
+        logger.info(f"  Successfully loaded parameters: {loaded_params:,} / {total_pretrained_params:,}")
         if missing:
             logger.warning(f'Hunyuan3DDiT missing keys: {len(missing)}')
+            logger.warning(f'  These are model parameters that were not found in pretrained checkpoint (will use random initialization)')
             for key in missing[:10]:
                 logger.warning(f'  - {key}')
             if len(missing) > 10:
                 logger.warning(f'  ... and {len(missing) - 10} more')
+        else:
+            logger.info(f'Hunyuan3DDiT: All weights loaded successfully!')
         if unexpected:
             logger.warning(f'Hunyuan3DDiT unexpected keys: {len(unexpected)}')
             for key in unexpected[:10]:
