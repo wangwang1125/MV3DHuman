@@ -6,7 +6,7 @@ name: "HunyuanDiT Multi-View RGB Full Fine-tuning (from Hunyuan3D-2mv); VAE: 307
 # Supports loading from pretrained weights and resuming from checkpoints
 
 training:
-  steps: 10_0000_0000
+  steps: 10_0000
   use_amp: true
   amp_type: "bf16"
   base_lr: 1e-5
@@ -125,7 +125,7 @@ model:
       scheduler:
         target: hy3dshape.utils.trainings.lr_scheduler.LambdaWarmUpCosineFactorScheduler
         params:
-          warm_up_steps: 50
+          warm_up_steps: 2000
           f_start: 1.e-6
           f_min: 1.e-3
           f_max: 1.0

@@ -11,6 +11,7 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from ...utils.ema import LitEma
 from ...utils.misc import instantiate_from_config, instantiate_non_trainable_model
+from ...utils import smart_load_model
 
 
 
@@ -56,6 +57,98 @@ class Diffuser(pl.LightningModule):
         self.denoiser_cfg = denoiser_cfg
         self.model = instantiate_from_config(denoiser_cfg, device=None, dtype=None)
         self.cond_stage_model = instantiate_from_config(cond_stage_config)
+        
+        # Log conditioner info
+        rank_zero_info(f"Initialized cond_stage_model: {type(self.cond_stage_model).__name__}")
+        if hasattr(self.cond_stage_model, 'main_image_encoder'):
+            rank_zero_info(f"  main_image_encoder: {type(self.cond_stage_model.main_image_encoder).__name__}")
+            if hasattr(self.cond_stage_model.main_image_encoder, 'view_num'):
+                rank_zero_info(f"  view_num: {self.cond_stage_model.main_image_encoder.view_num}")
+
+        # ========= load conditioner weights from pretrained checkpoint if available ========= #
+        # 如果 denoiser 是从预训练模型加载的，从同一个 checkpoint 加载 conditioner 的权重
+        # 直接复用预训练模型中的 conditioner，通过键名映射让 load_state_dict 自动处理
+        if denoiser_cfg.get("from_pretrained", None):
+            try:
+                model_path = denoiser_cfg["from_pretrained"]
+                subfolder = denoiser_cfg.get("subfolder", "hunyuan3d-dit-v2-mv")
+                use_safetensors = denoiser_cfg.get("use_safetensors", True)
+                variant = denoiser_cfg.get("variant", "fp16")
+                
+                _, pretrained_ckpt_path = smart_load_model(
+                    model_path,
+                    subfolder=subfolder,
+                    use_safetensors=use_safetensors,
+                    variant=variant
+                )
+                
+                # 加载预训练 checkpoint 并映射键名：conditioner.* -> cond_stage_model.*
+                if use_safetensors:
+                    import safetensors.torch
+                    ckpt = safetensors.torch.load_file(pretrained_ckpt_path, device='cpu')
+                    # safetensors 格式：键名是扁平的 conditioner.main_image_encoder.*
+                    # 映射到 cond_stage_model.main_image_encoder.*
+                    mapped_state_dict = {}
+                    conditioner_keys = []
+                    for key, value in ckpt.items():
+                        if key.startswith('conditioner.'):
+                            new_key = key.replace('conditioner.', 'cond_stage_model.', 1)
+                            mapped_state_dict[new_key] = value
+                            conditioner_keys.append(key)
+                    
+                    if mapped_state_dict:
+                        # 统计预训练 checkpoint 中的 conditioner 权重
+                        total_pretrained_params = sum(v.numel() for v in mapped_state_dict.values())
+                        rank_zero_info(f"Found {len(conditioner_keys)} conditioner keys in pretrained checkpoint")
+                        rank_zero_info(f"  Total conditioner parameters in checkpoint: {total_pretrained_params:,}")
+                        rank_zero_info(f"Sample conditioner keys: {conditioner_keys[:5]}")
+                        
+                        # 加载权重
+                        missing, unexpected = self.load_state_dict(mapped_state_dict, strict=False)
+                        loaded_keys = len([k for k in mapped_state_dict.keys() if k.startswith('cond_stage_model.')])
+                        
+                        # 统计实际加载的 conditioner 参数数量
+                        conditioner_params = sum(p.numel() for p in self.cond_stage_model.parameters())
+                        conditioner_buffers = sum(b.numel() for b in self.cond_stage_model.buffers())
+                        rank_zero_info(f"Successfully loaded {loaded_keys} conditioner weights from pretrained checkpoint")
+                        rank_zero_info(f"  Conditioner model total parameters: {conditioner_params:,}")
+                        rank_zero_info(f"  Conditioner model total buffers: {conditioner_buffers:,}")
+                        rank_zero_info(f"  Conditioner model total: {conditioner_params + conditioner_buffers:,}")
+                        if missing:
+                            # Missing keys 中的 model.* 是 DiT 模型的权重，这些会在 Hunyuan3DDiT.from_single_file 中加载
+                            model_missing = [k for k in missing if k.startswith('model.')]
+                            other_missing = [k for k in missing if not k.startswith('model.')]
+                            if model_missing:
+                                rank_zero_info(f"  Missing keys (DiT model weights, will be loaded separately): {len(model_missing)}")
+                            if other_missing:
+                                rank_zero_info(f"  Missing keys (other): {len(other_missing)} (first 5: {other_missing[:5]})")
+                        if unexpected:
+                            rank_zero_info(f"  Unexpected keys: {len(unexpected)} (first 5: {unexpected[:5]})")
+                    else:
+                        rank_zero_info("No conditioner weights found in pretrained checkpoint")
+                else:
+                    # ckpt 格式：conditioner 是一个嵌套字典
+                    ckpt = torch.load(pretrained_ckpt_path, map_location='cpu', weights_only=True)
+                    if 'conditioner' in ckpt:
+                        conditioner_state = ckpt['conditioner']
+                        rank_zero_info(f"Found conditioner in pretrained checkpoint with {len(conditioner_state)} top-level keys")
+                        # 映射到 cond_stage_model.*
+                        mapped_state_dict = {}
+                        for key, value in conditioner_state.items():
+                            mapped_state_dict[f'cond_stage_model.{key}'] = value
+                        
+                        if mapped_state_dict:
+                            missing, unexpected = self.load_state_dict(mapped_state_dict, strict=False)
+                            rank_zero_info(f"Successfully loaded {len(mapped_state_dict)} conditioner weights from pretrained checkpoint")
+                            if missing:
+                                rank_zero_info(f"  Missing keys: {len(missing)} (first 5: {missing[:5]})")
+                            if unexpected:
+                                rank_zero_info(f"  Unexpected keys: {len(unexpected)} (first 5: {unexpected[:5]})")
+                    else:
+                        rank_zero_info("No conditioner found in pretrained checkpoint")
+            except Exception as e:
+                rank_zero_info(f"Failed to load conditioner weights from pretrained checkpoint: {e}")
+                rank_zero_info("Will use randomly initialized conditioner weights")
 
         self.ckpt_path = ckpt_path
         if ckpt_path is not None:
