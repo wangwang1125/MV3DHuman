@@ -79,12 +79,22 @@ def sphere_hammersley_sequence(n, num_samples, offset=(0, 0)):
     phi = v * 2 * np.pi
     return [phi, theta]
 
-def trellis_cond_camera_sequence(num_cond_views):
+def trellis_cond_camera_sequence(num_cond_views, camera_offset=0.0):
+    """
+    生成多视图相机序列（Hammersley低差异序列）
+    
+    Args:
+        num_cond_views: 视图数量
+        camera_offset: 相机角度偏移（弧度），用于补偿mesh旋转
+                       如果mesh从x轴旋转到z轴（绕Y轴-90度），相机角度需要加90度（π/2）
+    """
     yaws = []
     pitchs = []
     offset = (np.random.rand(), np.random.rand())
     for i in range(num_cond_views):
         y, p = sphere_hammersley_sequence(i, num_cond_views, offset)
+        # 应用相机角度偏移（如果mesh旋转了，相机角度也需要相应调整）
+        y = y + camera_offset
         yaws.append(y)
         pitchs.append(p)
     fov_min, fov_max = 10, 70
@@ -109,14 +119,20 @@ def orthogonal_camera_sequence():
              for y, p, r, f in zip(yaws, pitchs, radius, fov)]
     return views
 
-def four_view_camera_sequence():
+def four_view_camera_sequence(camera_offset=0.0):
     """
     生成4个视角的相机序列：前、右、后、左
     使用固定的水平角度和垂直角度，确保拍摄前后左右四个方向
+    
+    Args:
+        camera_offset: 相机角度偏移（弧度），用于补偿mesh旋转
+                       如果mesh从x轴旋转到z轴（绕Y轴-90度），相机角度需要加90度（π/2）
     """
     # 前、右、后、左四个方向的水平角度 (yaw)
     # 0: 前方, π/2: 右方, π: 后方, 3π/2: 左方
-    yaws = [0, 0.5 * np.pi, np.pi, 1.5 * np.pi]
+    base_yaws = [0, 0.5 * np.pi, np.pi, 1.5 * np.pi]
+    # 应用相机角度偏移
+    yaws = [y + camera_offset for y in base_yaws]
     
     # 垂直角度 (pitch) 设为0，保持水平视角
     pitchs = [0, 0, 0, 0]
@@ -907,49 +923,6 @@ def normalize_scene() -> Tuple[float, Vector]:
     
     return scale, offset
 
-def rotate_mesh_for_four_view():
-    """旋转mesh以匹配四视图的相机位置
-    四视图相机位置：0°(前), 90°(右), 180°(后), 270°(左)
-    由于正视图现在是右视图，需要将mesh右旋90°使正视图对应相机0°位置
-    """
-    # 选择所有mesh对象
-    mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
-    
-    if not mesh_objects:
-        print("⚠️  没有找到mesh对象")
-        return
-    
-    print(f"找到 {len(mesh_objects)} 个mesh对象，开始右旋90°...")
-    
-    # 创建旋转矩阵：绕Z轴左旋90度
-    rotation_matrix = Matrix.Rotation(np.pi/2, 4, 'Z')
-    
-    # 直接修改每个mesh对象的变换矩阵
-    for obj in mesh_objects:
-        # 获取当前的世界变换矩阵
-        current_matrix = obj.matrix_world.copy()
-        
-        # 应用旋转（右旋90度）
-        # 注意：这里使用右乘来应用旋转
-        new_matrix = rotation_matrix @ current_matrix
-        
-        # 设置新的变换矩阵
-        obj.matrix_world = new_matrix
-        
-        print(f"  已旋转对象: {obj.name}")
-    
-    print("✅ 已将mesh右旋90°以匹配四视图相机位置")
-    
-    # 更新场景
-    bpy.context.view_layer.update()
-    
-    # 验证旋转结果
-    print("验证旋转结果:")
-    for obj in mesh_objects:
-        # 获取旋转后的位置和旋转信息
-        pos, rot, scale = obj.matrix_world.decompose()
-        euler = rot.to_euler('XYZ')
-        print(f"  {obj.name}: 位置=({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}), 旋转=({np.degrees(euler.z):.1f}°)")
 
 def get_transform_matrix(obj: bpy.types.Object) -> list:
     pos, rt, _ = obj.matrix_world.decompose()
@@ -968,18 +941,13 @@ def get_transform_matrix(obj: bpy.types.Object) -> list:
 def main(arg):
     os.makedirs(arg.output_folder, exist_ok=True)
     
-    # if arg.four_view_mode:
-    #     views = four_view_camera_sequence()
-    #     arg.save_mesh = True
-    #     arg.save_albedo = True
-    #     arg.save_normal = True
-    #     arg.save_depth = True
-    # el
+    camera_offset = - np.pi / 2 
+    
     if arg.geo_mode:
         if arg.views!=4:
-            views = trellis_cond_camera_sequence(arg.views)
+            views = trellis_cond_camera_sequence(arg.views, camera_offset=camera_offset)
         else:
-            views = four_view_camera_sequence()
+            views = four_view_camera_sequence(camera_offset=camera_offset)
         arg.save_mesh = True
         arg.save_depth = True
         arg.save_normal = True
@@ -1013,10 +981,6 @@ def main(arg):
     scale, offset = normalize_scene()
     print('[INFO] Scene normalized.')
     
-    # 在四视图模式下，在对象加载和归一化后旋转mesh
-    if arg.geo_mode and arg.views == 4:
-        print('[INFO] 四视图模式：旋转mesh以匹配相机位置...')
-        rotate_mesh_for_four_view()
     
     # Initialize camera and lighting
     cam = init_camera()
@@ -1076,66 +1040,61 @@ def main(arg):
             os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal.exr'))
             
             # 保存标准法线图（_N版本）：其他视图时，通过旋转mesh到正视图位置来重新渲染
-            if i != 0:  # 非正视图时
-                print(f"🔄 为视图{i}重新渲染_N法线图（旋转mesh到正视图位置）...")
-                
-                # 计算需要旋转的角度（从当前角度到正视图的角度）
-                target_angle = 0  # 正视图角度
-                current_angle = view['hangle']
-                rotation_angle = current_angle  # 需要旋转的角度
-                
-                # 旋转mesh回到正视图位置
-                rotation_matrix = Matrix.Rotation(-rotation_angle, 4, 'Z')
-                mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
-                for obj in mesh_objects:
-                    current_matrix = obj.matrix_world.copy()
-                    new_matrix = rotation_matrix @ current_matrix
-                    obj.matrix_world = new_matrix
-                
-                # 更新场景
-                bpy.context.view_layer.update()
-                
-                # 重新设置相机到正视图位置
-                cam.location = (
-                    view['cam_dis'] * np.cos(target_angle) * np.cos(0),
-                    view['cam_dis'] * np.sin(target_angle) * np.cos(0),
-                    view['cam_dis'] * np.sin(0)
-                )
-                
-                # 重新渲染法线图
-                normal_file_output = outputs['normal']
-                normal_file_output.file_slots[0].path = os.path.join(arg.output_folder, f'{i:03d}_normal_N')
-                bpy.ops.render.render(write_still=True)
-                bpy.context.view_layer.update()
-                
-                # 获取渲染的法线EXR文件
-                path = glob.glob(f'{normal_file_output.file_slots[0].path}*.exr')[0]
-                os.rename(path, f'{normal_file_output.file_slots[0].path}.exr')
-                
-                # 转换并保存PNG
-                ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal_N.exr'), 
-                                 os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'),
-                                 depth_exr=depth_exr_path, view_index=i)
-                os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal_N.exr'))
-                # 恢复mesh和相机到原始位置
-                rotation_matrix = Matrix.Rotation(rotation_angle, 4, 'Z')
-                for obj in mesh_objects:
-                    current_matrix = obj.matrix_world.copy()
-                    new_matrix = rotation_matrix @ current_matrix
-                    obj.matrix_world = new_matrix
-                
-                cam.location = (
-                    view['cam_dis'] * np.cos(view['hangle']) * np.cos(view['vangle']),
-                    view['cam_dis'] * np.sin(view['hangle']) * np.cos(view['vangle']),
-                    view['cam_dis'] * np.sin(view['vangle'])
-                )
-                bpy.context.view_layer.update()
-                
-                print(f"✅ 视图{i}的_N法线图渲染完成")
-            else:
-                # 正视图直接使用原始法线图
-                shutil.copyfile(os.path.join(arg.output_folder, f'{i:03d}_normal.png'),
-                                os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'))
+            print(f"🔄 为视图{i}重新渲染_N法线图（旋转mesh到正视图位置）...")
+            
+            # 计算需要旋转的角度（从当前角度到正视图的角度）
+            target_angle = 0  # 正视图角度
+            current_angle = view['hangle']
+            rotation_angle = current_angle  # 需要旋转的角度
+            
+            # 旋转mesh回到正视图位置
+            rotation_matrix = Matrix.Rotation(-rotation_angle, 4, 'Z')
+            mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+            for obj in mesh_objects:
+                current_matrix = obj.matrix_world.copy()
+                new_matrix = rotation_matrix @ current_matrix
+                obj.matrix_world = new_matrix
+            
+            # 更新场景
+            bpy.context.view_layer.update()
+            
+            # 重新设置相机到正视图位置
+            cam.location = (
+                view['cam_dis'] * np.cos(target_angle) * np.cos(0),
+                view['cam_dis'] * np.sin(target_angle) * np.cos(0),
+                view['cam_dis'] * np.sin(0)
+            )
+            
+            # 重新渲染法线图
+            normal_file_output = outputs['normal']
+            normal_file_output.file_slots[0].path = os.path.join(arg.output_folder, f'{i:03d}_normal_N')
+            bpy.ops.render.render(write_still=True)
+            bpy.context.view_layer.update()
+            
+            # 获取渲染的法线EXR文件
+            path = glob.glob(f'{normal_file_output.file_slots[0].path}*.exr')[0]
+            os.rename(path, f'{normal_file_output.file_slots[0].path}.exr')
+            
+            # 转换并保存PNG
+            ConvertNormalMap(os.path.join(arg.output_folder, f'{i:03d}_normal_N.exr'), 
+                                os.path.join(arg.output_folder, f'{i:03d}_normal_N.png'),
+                                depth_exr=depth_exr_path, view_index=i)
+            os.remove(os.path.join(arg.output_folder, f'{i:03d}_normal_N.exr'))
+            # 恢复mesh和相机到原始位置
+            rotation_matrix = Matrix.Rotation(rotation_angle, 4, 'Z')
+            for obj in mesh_objects:
+                current_matrix = obj.matrix_world.copy()
+                new_matrix = rotation_matrix @ current_matrix
+                obj.matrix_world = new_matrix
+            
+            cam.location = (
+                view['cam_dis'] * np.cos(view['hangle']) * np.cos(view['vangle']),
+                view['cam_dis'] * np.sin(view['hangle']) * np.cos(view['vangle']),
+                view['cam_dis'] * np.sin(view['vangle'])
+            )
+            bpy.context.view_layer.update()
+            
+            print(f"✅ 视图{i}的_N法线图渲染完成")
             
         
         # Convert depth map to PNG format in all modes  
