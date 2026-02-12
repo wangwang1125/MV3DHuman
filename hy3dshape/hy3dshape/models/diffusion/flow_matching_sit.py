@@ -652,8 +652,8 @@ class Diffuser(pl.LightningModule):
         return loss
 
     def on_after_backward(self):
-        """在 backward 之后监控梯度（仅在训练初期）"""
-        if self.global_step < 50 and self.training:
+        """在 backward 之后监控梯度（每100步打印一次）"""
+        if self.training:
             # 计算梯度范数
             total_norm = 0.0
             param_count = 0
@@ -671,8 +671,8 @@ class Diffuser(pl.LightningModule):
             
             total_norm = total_norm ** (1. / 2)
             
-            # 只在第一个 batch 打印详细信息
-            if self.global_step % 10 == 0 or total_norm > 10.0:
+            # 每100步打印一次，或者梯度范数异常时立即打印
+            if self.global_step % 100 == 0 or total_norm > 10.0:
                 print(f"\n{'='*70}")
                 print(f"[Training Debug] Step {self.global_step} (after backward)")
                 print(f"  Learning rate: {self.trainer.optimizers[0].param_groups[0]['lr']:.2e}")
@@ -691,6 +691,10 @@ class Diffuser(pl.LightningModule):
                 elif total_norm > 5.0:
                     print(f"  ⚠ WARNING: Gradient norm is large ({total_norm:.2f})")
                     print(f"     Consider lowering learning rate or adding gradient clipping")
+                elif total_norm > 1.0:
+                    print(f"  ℹ INFO: Gradient norm is moderate ({total_norm:.2f})")
+                else:
+                    print(f"  ✓ Gradient norm is normal ({total_norm:.2f})")
                 print(f"{'='*70}\n")
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
