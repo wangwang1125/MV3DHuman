@@ -151,7 +151,8 @@ class DinoImageEncoderMV(DinoImageEncoder):
             get_1d_sincos_pos_embed_from_grid(self.model.config.hidden_size, pos)).float()
 
         view_embedding = view_embedding.unsqueeze(1).repeat(1, self.num_patches, 1)
-        self.view_embed = view_embedding.unsqueeze(0)
+        # 注册为 buffer，确保能从预训练权重加载
+        self.register_buffer('view_embed', view_embedding.unsqueeze(0))
 
     def forward(self, image, mask=None, value_range=(-1, 1), view_idxs=None, **kwargs):
         # 打印调试信息（仅第一次）

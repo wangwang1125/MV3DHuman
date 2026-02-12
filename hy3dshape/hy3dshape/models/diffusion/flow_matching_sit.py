@@ -103,6 +103,14 @@ class Diffuser(pl.LightningModule):
                         rank_zero_info(f"  Total conditioner parameters in checkpoint: {total_pretrained_params:,}")
                         rank_zero_info(f"Sample conditioner keys: {conditioner_keys[:5]}")
                         
+                        # 检查是否包含 view_embed 权重
+                        view_embed_keys = [k for k in mapped_state_dict.keys() if 'view_embed' in k]
+                        if view_embed_keys:
+                            rank_zero_info(f"  ✓ Found view_embed weights: {view_embed_keys}")
+                        else:
+                            rank_zero_info(f"  ⚠ WARNING: No view_embed weights found in pretrained checkpoint!")
+                            rank_zero_info(f"     view_embed will be randomly initialized, which may cause feature mismatch!")
+                        
                         # 加载权重
                         missing, unexpected = self.load_state_dict(mapped_state_dict, strict=False)
                         loaded_keys = len([k for k in mapped_state_dict.keys() if k.startswith('cond_stage_model.')])
@@ -114,6 +122,16 @@ class Diffuser(pl.LightningModule):
                         rank_zero_info(f"  Conditioner model total parameters: {conditioner_params:,}")
                         rank_zero_info(f"  Conditioner model total buffers: {conditioner_buffers:,}")
                         rank_zero_info(f"  Conditioner model total: {conditioner_params + conditioner_buffers:,}")
+                        
+                        # 检查 view_embed 是否被加载
+                        if hasattr(self.cond_stage_model, 'main_image_encoder') and hasattr(self.cond_stage_model.main_image_encoder, 'view_embed'):
+                            view_embed_loaded = any('view_embed' in k for k in mapped_state_dict.keys())
+                            if view_embed_loaded:
+                                rank_zero_info(f"  ✓ view_embed weights loaded successfully")
+                            else:
+                                rank_zero_info(f"  ⚠ WARNING: view_embed weights NOT loaded - using random initialization!")
+                                rank_zero_info(f"     This may cause training instability and feature destruction!")
+                        
                         if missing:
                             # Missing keys 中的 model.* 是 DiT 模型的权重，这些会在 Hunyuan3DDiT.from_single_file 中加载
                             model_missing = [k for k in missing if k.startswith('model.')]
@@ -122,6 +140,10 @@ class Diffuser(pl.LightningModule):
                                 rank_zero_info(f"  Missing keys (DiT model weights, will be loaded separately): {len(model_missing)}")
                             if other_missing:
                                 rank_zero_info(f"  Missing keys (other): {len(other_missing)} (first 5: {other_missing[:5]})")
+                                # 特别检查 view_embed 是否在 missing 中
+                                view_embed_missing = [k for k in other_missing if 'view_embed' in k]
+                                if view_embed_missing:
+                                    rank_zero_info(f"  ⚠ CRITICAL: view_embed keys missing: {view_embed_missing}")
                         if unexpected:
                             rank_zero_info(f"  Unexpected keys: {len(unexpected)} (first 5: {unexpected[:5]})")
                     else:
@@ -604,6 +626,57 @@ class Diffuser(pl.LightningModule):
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
         loss = self.forward(batch)
+
+        # 监控梯度范数和权重变化（仅前几步，用于诊断）
+        if batch_idx < 5 and self.global_step < 50:
+            # 计算梯度范数
+            total_norm = 0.0
+            param_count = 0
+            max_grad_norm = 0.0
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    param_count += 1
+                    max_grad_norm = max(max_grad_norm, param_norm.item())
+            
+            total_norm = total_norm ** (1. / 2)
+            
+            if batch_idx == 0:
+                print(f"\n{'='*70}")
+                print(f"[Training Debug] Step {self.global_step}, Batch {batch_idx}")
+                print(f"  Loss: {loss.item():.6f}")
+                print(f"  Learning rate: {self.trainer.optimizers[0].param_groups[0]['lr']:.2e}")
+                print(f"  Total gradient norm: {total_norm:.6f}")
+                print(f"  Max gradient norm: {max_grad_norm:.6f}")
+                print(f"  Parameters with gradients: {param_count}")
+                
+                # 检查前几个参数的权重变化（仅第一次）
+                if self.global_step == 0:
+                    print(f"\n[Training Debug] Model weight check (first 3 params):")
+                    for i, (name, param) in enumerate(self.model.named_parameters()):
+                        if i < 3:
+                            print(f"  {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                
+                # 检查 view_embed 的值（仅第一次）
+                if not hasattr(self, '_checked_view_embed'):
+                    if hasattr(self.cond_stage_model, 'main_image_encoder') and hasattr(self.cond_stage_model.main_image_encoder, 'view_embed'):
+                        view_embed = self.cond_stage_model.main_image_encoder.view_embed
+                        print(f"\n[Training Debug] view_embed check:")
+                        print(f"  view_embed shape: {view_embed.shape}")
+                        print(f"  view_embed mean: {view_embed.mean().item():.6f}")
+                        print(f"  view_embed std: {view_embed.std().item():.6f}")
+                        print(f"  view_embed requires_grad: {view_embed.requires_grad}")
+                        print(f"  view_embed is buffer: {'view_embed' in dict(self.cond_stage_model.main_image_encoder.named_buffers())}")
+                    self._checked_view_embed = True
+                print(f"{'='*70}\n")
+                
+                # 警告：如果梯度范数太大
+                if total_norm > 10.0:
+                    print(f"  ⚠ WARNING: Gradient norm is very large ({total_norm:.2f})!")
+                    print(f"     This may cause pretrained weights to be destroyed!")
+                    print(f"     Consider: 1) Lower learning rate, 2) Increase gradient clipping, 3) Check data preprocessing")
+
         split = 'train'
         loss_dict = {
             f"{split}/simple": loss.detach(),
