@@ -41,6 +41,39 @@ from .utils import worker_init_fn, pytorch_worker_seed, make_seed
 from .dit_asl import ResampledShards, read_npz, read_json, padding, viz_pc
 
 
+def multiview_collate_fn(batch):
+    """
+    自定义 collate_fn，用于处理多视图数据
+    将多个样本的 image_dict 和 normal_dict 合并为 list of dicts
+    """
+    if len(batch) == 0:
+        return {}
+    
+    # 收集所有字段
+    collated = {}
+    for key in batch[0].keys():
+        values = [sample.get(key) for sample in batch]
+        
+        # 过滤 None 值
+        values = [v for v in values if v is not None]
+        if len(values) == 0:
+            continue
+        
+        # 对于 image 和 normal（如果是 dict），保留为 list of dicts
+        if key in ['image', 'normal'] and isinstance(values[0], dict):
+            collated[key] = values  # 保留为 list of dicts
+        # 对于其他字段（tensor），使用默认的 stack/cat
+        elif isinstance(values[0], torch.Tensor):
+            if values[0].dim() == 0:
+                collated[key] = torch.stack(values, dim=0)
+            else:
+                collated[key] = torch.stack(values, dim=0) if values[0].dim() > 1 else torch.cat(values, dim=0)
+        else:
+            collated[key] = values
+    
+    return collated
+
+
 class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDataset):
     def __init__(
         self,
@@ -94,6 +127,19 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         self.multiview_indices = multiview_indices
         self.depth_fusion_strategy = depth_fusion_strategy
         self.normal_fusion_strategy = normal_fusion_strategy
+        
+        # 映射视图索引到视图名称（与 MVImageProcessorV2 的 view2idx 一致）
+        # 假设 multiview_indices 的顺序是 [front_idx, left_idx, back_idx, right_idx]
+        # 如果 multiview_indices 是 [0, 1, 2, 3]，则对应 front, left, back, right
+        self.idx2view = {
+            0: 'front',
+            1: 'left',
+            2: 'back',
+            3: 'right'
+        }
+        # 如果 multiview_indices 不是 [0,1,2,3]，需要根据实际索引映射
+        # 这里假设配置中的 multiview_indices 顺序就是 front, left, back, right
+        self.view_order = ['front', 'left', 'back', 'right']
         
         rank_zero_info(f'*' * 50)
         rank_zero_info(f'Multi-View Dataset Infos:')
@@ -340,38 +386,66 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         """Generate image paths based on multiview_indices configuration"""
         uid = item.split('/')[-1]
         
-        # 根据multiview_indices生成对应的图片路径
+        # 根据multiview_indices生成对应的图片路径，并构建 image_dict
+        # multiview_indices 的顺序应该对应 view_order: [front, left, back, right]
         if self.multiview_indices is not None and len(self.multiview_indices) > 0:
-            # 使用配置的multiview_indices
-            render_img_paths = [os.path.join(item, f'render_cond/{i:03d}.png') for i in self.multiview_indices]
+            # 构建 image_dict，键为视图名称，值为图片路径
+            image_dict = {}
+            for idx, view_name in enumerate(self.view_order):
+                if idx < len(self.multiview_indices):
+                    view_idx = self.multiview_indices[idx]
+                    image_dict[view_name] = os.path.join(item, f'render_cond/{view_idx:03d}.png')
         else:
-            # 如果没有设置multiview_indices，使用默认的24个视图
-            render_img_paths = [os.path.join(item, f'render_cond/{i:03d}.png') for i in range(24)]
+            # 如果没有设置multiview_indices，使用默认的24个视图的前4个
+            image_dict = {
+                'front': os.path.join(item, f'render_cond/000.png'),
+                'left': os.path.join(item, f'render_cond/006.png'),
+                'back': os.path.join(item, f'render_cond/012.png'),
+                'right': os.path.join(item, f'render_cond/018.png')
+            }
         
         surface_npz_path = os.path.join(item, f'geo_data/{uid}_surface.npz')
         
         sample = {}
-        sample["image"] = render_img_paths
+        sample["image"] = image_dict  # 返回 image_dict 而不是路径列表
         
         # Load depth maps if enabled
         if self.load_depth:
             if self.multiview_indices is not None and len(self.multiview_indices) > 0:
-                # 使用配置的multiview_indices
-                depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in self.multiview_indices]
+                # 构建 depth_dict
+                depth_dict = {}
+                for idx, view_name in enumerate(self.view_order):
+                    if idx < len(self.multiview_indices):
+                        view_idx = self.multiview_indices[idx]
+                        depth_dict[view_name] = os.path.join(item, f'render_cond/{view_idx:03d}_depth.exr')
+                sample["depth"] = depth_dict
             else:
-                # 如果没有设置multiview_indices，使用默认的24个视图
-                depth_img_paths = [os.path.join(item, f'render_cond/{i:03d}_depth.exr') for i in range(24)]
-            sample["depth"] = depth_img_paths
+                depth_dict = {
+                    'front': os.path.join(item, f'render_cond/000_depth.exr'),
+                    'left': os.path.join(item, f'render_cond/006_depth.exr'),
+                    'back': os.path.join(item, f'render_cond/012_depth.exr'),
+                    'right': os.path.join(item, f'render_cond/018_depth.exr')
+                }
+                sample["depth"] = depth_dict
         
         # Load normal maps if enabled
         if self.load_normal:
             if self.multiview_indices is not None and len(self.multiview_indices) > 0:
-                # 使用配置的multiview_indices
-                normal_img_paths = [os.path.join(item, f'render_cond/{i:03d}_normal.png') for i in self.multiview_indices]
+                # 构建 normal_dict
+                normal_dict = {}
+                for idx, view_name in enumerate(self.view_order):
+                    if idx < len(self.multiview_indices):
+                        view_idx = self.multiview_indices[idx]
+                        normal_dict[view_name] = os.path.join(item, f'render_cond/{view_idx:03d}_normal.png')
+                sample["normal"] = normal_dict
             else:
-                # 如果没有设置multiview_indices，使用默认的24个视图
-                normal_img_paths = [os.path.join(item, f'render_cond/{i:03d}_normal.png') for i in range(24)]
-            sample["normal"] = normal_img_paths
+                normal_dict = {
+                    'front': os.path.join(item, f'render_cond/000_normal.png'),
+                    'left': os.path.join(item, f'render_cond/006_normal.png'),
+                    'back': os.path.join(item, f'render_cond/012_normal.png'),
+                    'right': os.path.join(item, f'render_cond/018_normal.png')
+                }
+                sample["normal"] = normal_dict
         
         surface_data = read_npz(surface_npz_path)
         sample["random_surface"] = surface_data['random_surface']
@@ -379,33 +453,32 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         return sample
 
     def transform(self, sample):
-        """Transform sample with multi-view loading"""
+        """Transform sample with multi-view loading - returns image_dict for MVImageProcessorV2"""
         rng = np.random.default_rng()
         random_surface = sample.get("random_surface", 0)
         sharpedge_surface = sample.get("sharpedge_surface", 0)
         
-        # Load multi-view images
-        image_input, mask_input = self.load_multiview_render(sample['image'])
+        # 直接返回 image_dict，让 MVImageProcessorV2 处理
+        # 不再进行预处理（padding, transform等），这些由 MVImageProcessorV2 统一处理
         surface, geo_points = self.load_surface_sdf_points(rng, random_surface, sharpedge_surface)
         
         result_sample = {
             "surface": surface,
             "geo_points": geo_points,
-            "image": image_input,  # Shape: (num_views, C, H, W)
-            "mask": mask_input,    # Shape: (num_views, 1, H, W)
+            "image": sample['image'],  # 返回 image_dict，让 pipeline 的 prepare_image 通过 MVImageProcessorV2 处理
         }
         
-        # Load and process multi-view depth maps if enabled
+        # Load depth maps if enabled - depth 仍然返回 tensor（因为 ControlNet 需要）
+        # depth 不经过 MVImageProcessorV2，所以需要预处理成 tensor
         if self.load_depth and "depth" in sample:
-            depth_input = self.load_multiview_depth_maps(sample['depth'])
+            # depth_dict 需要按 view_order 顺序提取路径，确保顺序一致
+            depth_paths = [sample['depth'][view_name] for view_name in self.view_order if view_name in sample['depth']]
+            depth_input = self.load_multiview_depth_maps(depth_paths)
             result_sample["depth"] = depth_input  # Shape: (num_views, 1, H, W) - multi-view depths
         
-        # Load and process multi-view normal maps if enabled
-        # Normal maps are processed like RGB images using load_multiview_render
+        # Load normal maps if enabled - normal 也返回 normal_dict
         if self.load_normal and "normal" in sample:
-            normal_input, normal_mask = self.load_multiview_render(sample['normal'])
-            result_sample["normal"] = normal_input  # Shape: (num_views, C, H, W) - multi-view normals as RGB
-            result_sample["normal_mask"] = normal_mask  # Shape: (num_views, 1, H, W)
+            result_sample["normal"] = sample['normal']  # 返回 normal_dict，让 MVImageProcessorV2 处理
         
         return result_sample
 
@@ -510,6 +583,7 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             pin_memory=True,
             drop_last=True,
             worker_init_fn=worker_init_fn,
+            collate_fn=multiview_collate_fn,  # 使用自定义 collate_fn 处理 image_dict
         )
 
     def val_dataloader(self):
@@ -537,4 +611,5 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             pin_memory=True,
             drop_last=True,
             worker_init_fn=worker_init_fn,
+            collate_fn=multiview_collate_fn,  # 使用自定义 collate_fn 处理 image_dict
         )

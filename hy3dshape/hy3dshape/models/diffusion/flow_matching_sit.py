@@ -305,12 +305,41 @@ class Diffuser(pl.LightningModule):
                 self._printed_batch_info = True
             
             # Process RGB images
-            rgb_contexts = self.cond_stage_model(image=batch.get('image'), text=batch.get('text'), mask=batch.get('mask'))
+            # 如果 image 是 dict（多视图）或 list of dicts（batch），通过 pipeline 的 prepare_image 处理（使用 MVImageProcessorV2）
+            image_input = batch.get('image')
+            mask_input = batch.get('mask')
+            if isinstance(image_input, dict):
+                # 单个样本的多视图输入：通过 pipeline 的 prepare_image 处理，得到排序后的 tensor 和 view_idxs
+                cond_inputs = self.pipeline.prepare_image(image_input, mask_input)
+                image_tensor = cond_inputs.pop('image')
+                # view_idxs 会在 cond_inputs 中，传递给 conditioner
+                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=cond_inputs.get('mask'), **cond_inputs)
+            elif isinstance(image_input, list) and len(image_input) > 0 and isinstance(image_input[0], dict):
+                # batch 的多视图输入：list of dicts，通过 pipeline 的 prepare_image 处理
+                cond_inputs = self.pipeline.prepare_image(image_input, mask_input)
+                image_tensor = cond_inputs.pop('image')
+                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=cond_inputs.get('mask'), **cond_inputs)
+            else:
+                # 单视图输入：直接使用
+                rgb_contexts = self.cond_stage_model(image=image_input, text=batch.get('text'), mask=mask_input)
             
             # Process normal maps if available - concatenate with RGB tokens
             if 'normal' in batch and batch['normal'] is not None:
                 # Load normal maps and encode them through DinoImageEncoderMV
-                normal_contexts = self.cond_stage_model(image=batch.get('normal'), text=batch.get('text'), mask=batch.get('normal_mask'))
+                normal_input = batch.get('normal')
+                normal_mask_input = batch.get('normal_mask')
+                if isinstance(normal_input, dict):
+                    # 单个样本的多视图 normal：通过 pipeline 的 prepare_image 处理
+                    normal_cond_inputs = self.pipeline.prepare_image(normal_input, normal_mask_input)
+                    normal_tensor = normal_cond_inputs.pop('image')
+                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_cond_inputs.get('mask'), **normal_cond_inputs)
+                elif isinstance(normal_input, list) and len(normal_input) > 0 and isinstance(normal_input[0], dict):
+                    # batch 的多视图 normal：list of dicts，通过 pipeline 的 prepare_image 处理
+                    normal_cond_inputs = self.pipeline.prepare_image(normal_input, normal_mask_input)
+                    normal_tensor = normal_cond_inputs.pop('image')
+                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_cond_inputs.get('mask'), **normal_cond_inputs)
+                else:
+                    normal_contexts = self.cond_stage_model(image=normal_input, text=batch.get('text'), mask=normal_mask_input)
                 
                 # Concatenate RGB and Normal tokens along sequence dimension
                 for key in rgb_contexts:
