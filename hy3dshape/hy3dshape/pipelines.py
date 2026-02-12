@@ -529,7 +529,14 @@ class Hunyuan3DDiTPipeline:
         # Handle dictionary input for multi-view images (MVImageProcessorV2)
         if isinstance(image, dict):
             # For multi-view input, pass the entire dictionary to the image processor
-            return self.image_processor(image)
+            output = self.image_processor(image)
+            # 单个样本时，view_idxs 需要包装成列表的列表，以匹配 batch 格式
+            # DinoImageEncoderMV.forward 期望 view_idxs 是 list of lists，每个元素对应一个 batch 样本
+            if 'view_idxs' in output and isinstance(output['view_idxs'], list):
+                # 检查是否是单个样本的格式 [0,1,2,3]，需要包装成 [[0,1,2,3]]
+                if len(output['view_idxs']) > 0 and not isinstance(output['view_idxs'][0], list):
+                    output['view_idxs'] = [output['view_idxs']]
+            return output
         
         # Handle list of dictionaries for multi-view images
         if isinstance(image, list) and len(image) > 0 and isinstance(image[0], dict):
@@ -545,10 +552,10 @@ class Hunyuan3DDiTPipeline:
             for key, value in cond_input.items():
                 if isinstance(value[0], torch.Tensor):
                     cond_input[key] = torch.cat(value, dim=0)
-                elif key == 'view_idxs' and isinstance(value[0], list):
-                    # view_idxs 是 list of lists，需要展平：[[0,1,2,3], [0,1,2,3]] -> [[0,1,2,3], [0,1,2,3]]
-                    # 每个元素已经是列表，直接保留
-                    cond_input[key] = [item[0] if isinstance(item, list) and len(item) > 0 else item for item in value]
+                elif key == 'view_idxs':
+                    # view_idxs 格式：每个样本是列表 [0,1,2,3]，batch 是 list of lists
+                    # 直接保留列表格式
+                    cond_input[key] = value
             return cond_input
             
         if isinstance(image, str) and not os.path.exists(image):

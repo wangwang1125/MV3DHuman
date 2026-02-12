@@ -155,7 +155,7 @@ class MVImageProcessorV2(ImageProcessorV2):
         outputs = {
             'image': image,
             'mask': mask,
-            'view_idxs': [list(view_idxs)]  # 包装成列表的列表，每个batch样本一个列表
+            'view_idxs': list(view_idxs)  # 返回列表，与官方格式一致：(0,1,2,3) -> [0,1,2,3]
         }
         return outputs
 
