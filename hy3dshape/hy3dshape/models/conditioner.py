@@ -154,6 +154,21 @@ class DinoImageEncoderMV(DinoImageEncoder):
         self.view_embed = view_embedding.unsqueeze(0)
 
     def forward(self, image, mask=None, value_range=(-1, 1), view_idxs=None, **kwargs):
+        # 打印调试信息（仅第一次）
+        if not hasattr(self, '_printed_dino_mv_debug'):
+            print(f"\n{'='*70}")
+            print(f"[DinoImageEncoderMV Debug] Forward called")
+            print(f"  image shape: {image.shape if isinstance(image, torch.Tensor) else type(image)}")
+            print(f"  view_idxs: {view_idxs}")
+            print(f"  view_idxs type: {type(view_idxs)}")
+            if view_idxs is not None:
+                print(f"  view_idxs length: {len(view_idxs)}")
+                if len(view_idxs) > 0:
+                    print(f"  view_idxs[0]: {view_idxs[0]}, type: {type(view_idxs[0])}")
+            print(f"  value_range: {value_range}")
+            print(f"{'='*70}\n")
+            self._printed_dino_mv_debug = True
+        
         if value_range is not None:
             low, high = value_range
             image = (image - low) / (high - low)
@@ -174,13 +189,36 @@ class DinoImageEncoderMV(DinoImageEncoder):
 
         view_embedding = self.view_embed.to(last_hidden_state.dtype).to(last_hidden_state.device)
         if view_idxs is not None:
+            # 打印 view_idxs 处理信息（仅第一次）
+            if not hasattr(self, '_printed_view_idxs_process'):
+                print(f"\n{'='*70}")
+                print(f"[DinoImageEncoderMV Debug] Processing view_idxs")
+                print(f"  bs: {bs}, num_views: {num_views}")
+                print(f"  len(view_idxs): {len(view_idxs)}")
+                print(f"  view_idxs: {view_idxs}")
+                for i in range(min(bs, len(view_idxs))):
+                    print(f"  view_idxs[{i}]: {view_idxs[i]}, type: {type(view_idxs[i])}, len: {len(view_idxs[i]) if isinstance(view_idxs[i], (list, tuple)) else 'N/A'}")
+                print(f"{'='*70}\n")
+                self._printed_view_idxs_process = True
+            
             assert len(view_idxs) == bs
             view_embeddings = []
             for i in range(bs):
                 view_idx = view_idxs[i]
+                # 确保 view_idx 是列表或元组
+                if not isinstance(view_idx, (list, tuple)):
+                    raise TypeError(f"view_idxs[{i}] must be list or tuple, got {type(view_idx)}: {view_idx}")
                 assert num_views == len(view_idx)
                 view_embeddings.append(self.view_embed[:, view_idx, ...])
             view_embedding = torch.cat(view_embeddings, 0).to(last_hidden_state.dtype).to(last_hidden_state.device)
+        else:
+            # 如果没有 view_idxs，使用默认顺序
+            if not hasattr(self, '_printed_no_view_idxs'):
+                print(f"\n{'='*70}")
+                print(f"[DinoImageEncoderMV Debug] WARNING: view_idxs is None, using default order [0,1,2,3]")
+                print(f"  This may cause view order mismatch if input order is different!")
+                print(f"{'='*70}\n")
+                self._printed_no_view_idxs = True
 
         if num_views != self.view_num:
             view_embedding = view_embedding[:, :num_views, ...]

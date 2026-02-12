@@ -134,6 +134,15 @@ class MVImageProcessorV2(ImageProcessorV2):
         }
 
     def __call__(self, image_dict, border_ratio=0.15, to_tensor=True, **kwargs):
+        # 打印调试信息（仅第一次）
+        if not hasattr(self, '_printed_mv_processor_debug'):
+            print(f"\n{'='*70}")
+            print(f"[MVImageProcessorV2 Debug] Processing image_dict")
+            print(f"  Input keys (order): {list(image_dict.keys())}")
+            print(f"  view2idx mapping: {self.view2idx}")
+            print(f"{'='*70}\n")
+            self._printed_mv_processor_debug = True
+        
         if self.border_ratio is not None:
             border_ratio = self.border_ratio
 
@@ -146,12 +155,46 @@ class MVImageProcessorV2(ImageProcessorV2):
             images.append(image)
             masks.append(mask)
 
+        # 打印排序前的信息（仅第一次）
+        if not hasattr(self, '_printed_sort_debug'):
+            print(f"\n{'='*70}")
+            print(f"[MVImageProcessorV2 Debug] Before sorting:")
+            print(f"  view_idxs (before sort): {view_idxs}")
+            print(f"  view_tags (input order): {list(image_dict.keys())}")
+            print(f"{'='*70}\n")
+            self._printed_sort_debug = True
+
         zipped_lists = zip(view_idxs, images, masks)
         sorted_zipped_lists = sorted(zipped_lists)
         view_idxs, images, masks = zip(*sorted_zipped_lists)
 
+        # 打印排序后的信息（仅第一次）
+        if not hasattr(self, '_printed_sorted_debug'):
+            print(f"\n{'='*70}")
+            print(f"[MVImageProcessorV2 Debug] After sorting:")
+            print(f"  view_idxs (after sort): {list(view_idxs)}")
+            print(f"  Expected order: [0, 1, 2, 3] (front, left, back, right)")
+            if list(view_idxs) == [0, 1, 2, 3]:
+                print(f"  ✓ Sorting correct!")
+            else:
+                print(f"  ✗ WARNING: Sorting may be incorrect!")
+            print(f"{'='*70}\n")
+            self._printed_sorted_debug = True
+
         image = torch.cat(images, 0).unsqueeze(0)
         mask = torch.cat(masks, 0).unsqueeze(0)
+        
+        # 打印输出信息（仅第一次）
+        if not hasattr(self, '_printed_output_debug'):
+            print(f"\n{'='*70}")
+            print(f"[MVImageProcessorV2 Debug] Output:")
+            print(f"  image shape: {image.shape}")
+            print(f"  mask shape: {mask.shape}")
+            print(f"  view_idxs: {list(view_idxs)}")
+            print(f"  image value range: [{image.min().item():.4f}, {image.max().item():.4f}]")
+            print(f"{'='*70}\n")
+            self._printed_output_debug = True
+        
         outputs = {
             'image': image,
             'mask': mask,

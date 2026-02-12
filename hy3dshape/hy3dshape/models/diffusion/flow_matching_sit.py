@@ -410,21 +410,80 @@ class Diffuser(pl.LightningModule):
             
             # Process RGB images
             # 如果 image 是 dict（多视图）或 list of dicts（batch），通过 pipeline 的 prepare_image 处理（使用 MVImageProcessorV2）
+            # 训练时应该与推理时保持一致：都通过 encode_cond 处理
             image_input = batch.get('image')
             mask_input = batch.get('mask')
+            
+            # 打印调试信息（仅第一次）
+            if not hasattr(self, '_printed_mv_debug'):
+                print(f"\n{'='*70}")
+                print(f"[Multi-View Debug] Image Input Type: {type(image_input)}")
+                if isinstance(image_input, dict):
+                    print(f"  image_dict keys: {list(image_input.keys())}")
+                elif isinstance(image_input, list) and len(image_input) > 0:
+                    print(f"  image_list length: {len(image_input)}, first item type: {type(image_input[0])}")
+                    if isinstance(image_input[0], dict):
+                        print(f"  first dict keys: {list(image_input[0].keys())}")
+                print(f"{'='*70}\n")
+                self._printed_mv_debug = True
+            
             if isinstance(image_input, dict):
                 # 单个样本的多视图输入：通过 pipeline 的 prepare_image 处理，得到排序后的 tensor 和 view_idxs
                 cond_inputs = self.pipeline.prepare_image(image_input, mask_input)
+                
+                # 打印 cond_inputs 信息（仅第一次）
+                if not hasattr(self, '_printed_cond_inputs_debug'):
+                    print(f"\n{'='*70}")
+                    print(f"[Multi-View Debug] cond_inputs after prepare_image:")
+                    for key, value in cond_inputs.items():
+                        if isinstance(value, torch.Tensor):
+                            print(f"  {key}: shape={value.shape}, dtype={value.dtype}, min={value.min().item():.4f}, max={value.max().item():.4f}, mean={value.mean().item():.4f}")
+                        elif isinstance(value, list):
+                            print(f"  {key}: list length={len(value)}, first item={value[0] if len(value) > 0 else 'empty'}")
+                        else:
+                            print(f"  {key}: type={type(value)}, value={value}")
+                    print(f"{'='*70}\n")
+                    self._printed_cond_inputs_debug = True
+                
                 image_tensor = cond_inputs.pop('image')
                 mask_tensor = cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
-                # view_idxs 会在 cond_inputs 中，传递给 conditioner
-                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=mask_tensor, **cond_inputs)
+                
+                # 使用 encode_cond 处理，与推理时保持一致
+                # 训练时 disable_drop=True，所以不会进行 classifier-free guidance
+                rgb_contexts = self.pipeline.encode_cond(
+                    image=image_tensor,
+                    additional_cond_inputs=cond_inputs,
+                    do_classifier_free_guidance=False,
+                    dual_guidance=False,
+                )
             elif isinstance(image_input, list) and len(image_input) > 0 and isinstance(image_input[0], dict):
                 # batch 的多视图输入：list of dicts，通过 pipeline 的 prepare_image 处理
                 cond_inputs = self.pipeline.prepare_image(image_input, mask_input)
+                
+                # 打印 cond_inputs 信息（仅第一次）
+                if not hasattr(self, '_printed_cond_inputs_debug'):
+                    print(f"\n{'='*70}")
+                    print(f"[Multi-View Debug] cond_inputs after prepare_image (batch):")
+                    for key, value in cond_inputs.items():
+                        if isinstance(value, torch.Tensor):
+                            print(f"  {key}: shape={value.shape}, dtype={value.dtype}, min={value.min().item():.4f}, max={value.max().item():.4f}, mean={value.mean().item():.4f}")
+                        elif isinstance(value, list):
+                            print(f"  {key}: list length={len(value)}, first item={value[0] if len(value) > 0 else 'empty'}")
+                        else:
+                            print(f"  {key}: type={type(value)}, value={value}")
+                    print(f"{'='*70}\n")
+                    self._printed_cond_inputs_debug = True
+                
                 image_tensor = cond_inputs.pop('image')
                 mask_tensor = cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
-                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=mask_tensor, **cond_inputs)
+                
+                # 使用 encode_cond 处理，与推理时保持一致
+                rgb_contexts = self.pipeline.encode_cond(
+                    image=image_tensor,
+                    additional_cond_inputs=cond_inputs,
+                    do_classifier_free_guidance=False,
+                    dual_guidance=False,
+                )
             else:
                 # 单视图输入：直接使用
                 rgb_contexts = self.cond_stage_model(image=image_input, text=batch.get('text'), mask=mask_input)
@@ -439,13 +498,25 @@ class Diffuser(pl.LightningModule):
                     normal_cond_inputs = self.pipeline.prepare_image(normal_input, normal_mask_input)
                     normal_tensor = normal_cond_inputs.pop('image')
                     normal_mask_tensor = normal_cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
-                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_mask_tensor, **normal_cond_inputs)
+                    # 使用 encode_cond 处理，与推理时保持一致
+                    normal_contexts = self.pipeline.encode_cond(
+                        image=normal_tensor,
+                        additional_cond_inputs=normal_cond_inputs,
+                        do_classifier_free_guidance=False,
+                        dual_guidance=False,
+                    )
                 elif isinstance(normal_input, list) and len(normal_input) > 0 and isinstance(normal_input[0], dict):
                     # batch 的多视图 normal：list of dicts，通过 pipeline 的 prepare_image 处理
                     normal_cond_inputs = self.pipeline.prepare_image(normal_input, normal_mask_input)
                     normal_tensor = normal_cond_inputs.pop('image')
                     normal_mask_tensor = normal_cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
-                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_mask_tensor, **normal_cond_inputs)
+                    # 使用 encode_cond 处理，与推理时保持一致
+                    normal_contexts = self.pipeline.encode_cond(
+                        image=normal_tensor,
+                        additional_cond_inputs=normal_cond_inputs,
+                        do_classifier_free_guidance=False,
+                        dual_guidance=False,
+                    )
                 else:
                     normal_contexts = self.cond_stage_model(image=normal_input, text=batch.get('text'), mask=normal_mask_input)
                 
