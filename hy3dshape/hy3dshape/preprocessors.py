@@ -119,19 +119,18 @@ class ImageProcessorV2:
 
 class MVImageProcessorV2(ImageProcessorV2):
     """
-    view order: front, front clockwise 90, back, front clockwise 270
+    view order: front, left, back, right（与训练/数据集一致）
     """
     return_view_idx = True
 
     def __init__(self, size=512, border_ratio=None):
         super().__init__(size, border_ratio)
-        # 视图索引必须与训练时一致: [front, right, back, left]
-        # 对应角度: [0°, 90°, 180°, 270°]
+        # 视图索引必须与训练/数据集一致: [front, left, back, right]
         self.view2idx = {
             'front': 0,
-            'right': 1,  # 90° 顺时针
+            'left': 1,
             'back': 2,
-            'left': 3    # 270° 顺时针
+            'right': 3
         }
 
     def __call__(self, image_dict, border_ratio=0.15, to_tensor=True, **kwargs):
