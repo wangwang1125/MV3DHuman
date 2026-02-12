@@ -103,13 +103,40 @@ class Diffuser(pl.LightningModule):
                         rank_zero_info(f"  Total conditioner parameters in checkpoint: {total_pretrained_params:,}")
                         rank_zero_info(f"Sample conditioner keys: {conditioner_keys[:5]}")
                         
+                        # 检查所有可能的 view_embed 键名变体
+                        all_keys = list(ckpt.keys())
+                        view_embed_variants = [
+                            'view_embed',
+                            'view_embedding',
+                            'view_pos_embed',
+                            'view_position_embedding',
+                            'main_image_encoder.view_embed',
+                            'conditioner.main_image_encoder.view_embed',
+                        ]
+                        found_view_embed_keys = []
+                        for variant in view_embed_variants:
+                            matching_keys = [k for k in all_keys if variant in k.lower()]
+                            if matching_keys:
+                                found_view_embed_keys.extend(matching_keys)
+                        
                         # 检查是否包含 view_embed 权重
                         view_embed_keys = [k for k in mapped_state_dict.keys() if 'view_embed' in k]
                         if view_embed_keys:
                             rank_zero_info(f"  ✓ Found view_embed weights: {view_embed_keys}")
+                        elif found_view_embed_keys:
+                            rank_zero_info(f"  ⚠ Found potential view_embed keys in checkpoint (but not mapped): {found_view_embed_keys}")
+                            rank_zero_info(f"     Attempting to load them...")
+                            # 尝试加载这些键
+                            for key in found_view_embed_keys:
+                                if key.startswith('conditioner.'):
+                                    new_key = key.replace('conditioner.', 'cond_stage_model.', 1)
+                                    mapped_state_dict[new_key] = ckpt[key]
+                                    rank_zero_info(f"     Mapped: {key} -> {new_key}")
                         else:
-                            rank_zero_info(f"  ⚠ WARNING: No view_embed weights found in pretrained checkpoint!")
-                            rank_zero_info(f"     view_embed will be randomly initialized, which may cause feature mismatch!")
+                            rank_zero_info(f"  ℹ INFO: No view_embed weights found in pretrained checkpoint (this is expected)")
+                            rank_zero_info(f"     view_embed is a fixed positional encoding (sincos), not a trainable parameter")
+                            rank_zero_info(f"     It will be deterministically initialized using sincos (same as pretrained model)")
+                            rank_zero_info(f"     This is consistent with official Hunyuan3D-2 implementation")
                         
                         # 加载权重
                         missing, unexpected = self.load_state_dict(mapped_state_dict, strict=False)
@@ -123,14 +150,14 @@ class Diffuser(pl.LightningModule):
                         rank_zero_info(f"  Conditioner model total buffers: {conditioner_buffers:,}")
                         rank_zero_info(f"  Conditioner model total: {conditioner_params + conditioner_buffers:,}")
                         
-                        # 检查 view_embed 是否被加载
+                        # 检查 view_embed（它不参与训练，使用确定性初始化）
                         if hasattr(self.cond_stage_model, 'main_image_encoder') and hasattr(self.cond_stage_model.main_image_encoder, 'view_embed'):
                             view_embed_loaded = any('view_embed' in k for k in mapped_state_dict.keys())
                             if view_embed_loaded:
-                                rank_zero_info(f"  ✓ view_embed weights loaded successfully")
+                                rank_zero_info(f"  ✓ view_embed weights loaded from checkpoint")
                             else:
-                                rank_zero_info(f"  ⚠ WARNING: view_embed weights NOT loaded - using random initialization!")
-                                rank_zero_info(f"     This may cause training instability and feature destruction!")
+                                rank_zero_info(f"  ℹ INFO: view_embed not in checkpoint (expected - it's a fixed encoding)")
+                                rank_zero_info(f"     Using deterministic sincos initialization (consistent with pretrained model)")
                         
                         if missing:
                             # Missing keys 中的 model.* 是 DiT 模型的权重，这些会在 Hunyuan3DDiT.from_single_file 中加载
@@ -140,10 +167,10 @@ class Diffuser(pl.LightningModule):
                                 rank_zero_info(f"  Missing keys (DiT model weights, will be loaded separately): {len(model_missing)}")
                             if other_missing:
                                 rank_zero_info(f"  Missing keys (other): {len(other_missing)} (first 5: {other_missing[:5]})")
-                                # 特别检查 view_embed 是否在 missing 中
+                                # 检查 view_embed（如果 missing 是正常的，因为它是固定编码）
                                 view_embed_missing = [k for k in other_missing if 'view_embed' in k]
                                 if view_embed_missing:
-                                    rank_zero_info(f"  ⚠ CRITICAL: view_embed keys missing: {view_embed_missing}")
+                                    rank_zero_info(f"  ℹ INFO: view_embed keys in missing list (expected - it's a fixed encoding): {view_embed_missing}")
                         if unexpected:
                             rank_zero_info(f"  Unexpected keys: {len(unexpected)} (first 5: {unexpected[:5]})")
                     else:
@@ -624,58 +651,77 @@ class Diffuser(pl.LightningModule):
             loss = self.transport.training_losses(self.model, latents, dict(contexts=contexts))["loss"].mean()
         return loss
 
-    def training_step(self, batch, batch_idx, optimizer_idx=0):
-        loss = self.forward(batch)
-
-        # 监控梯度范数和权重变化（仅前几步，用于诊断）
-        if batch_idx < 5 and self.global_step < 50:
+    def on_after_backward(self):
+        """在 backward 之后监控梯度（仅在训练初期）"""
+        if self.global_step < 50 and self.training:
             # 计算梯度范数
             total_norm = 0.0
             param_count = 0
             max_grad_norm = 0.0
+            max_grad_param_name = None
+            
             for name, param in self.model.named_parameters():
                 if param.grad is not None:
                     param_norm = param.grad.data.norm(2)
                     total_norm += param_norm.item() ** 2
                     param_count += 1
-                    max_grad_norm = max(max_grad_norm, param_norm.item())
+                    if param_norm.item() > max_grad_norm:
+                        max_grad_norm = param_norm.item()
+                        max_grad_param_name = name
             
             total_norm = total_norm ** (1. / 2)
             
-            if batch_idx == 0:
+            # 只在第一个 batch 打印详细信息
+            if self.global_step % 10 == 0 or total_norm > 10.0:
                 print(f"\n{'='*70}")
-                print(f"[Training Debug] Step {self.global_step}, Batch {batch_idx}")
-                print(f"  Loss: {loss.item():.6f}")
+                print(f"[Training Debug] Step {self.global_step} (after backward)")
                 print(f"  Learning rate: {self.trainer.optimizers[0].param_groups[0]['lr']:.2e}")
                 print(f"  Total gradient norm: {total_norm:.6f}")
-                print(f"  Max gradient norm: {max_grad_norm:.6f}")
+                print(f"  Max gradient norm: {max_grad_norm:.6f} (param: {max_grad_param_name})")
                 print(f"  Parameters with gradients: {param_count}")
-                
-                # 检查前几个参数的权重变化（仅第一次）
-                if self.global_step == 0:
-                    print(f"\n[Training Debug] Model weight check (first 3 params):")
-                    for i, (name, param) in enumerate(self.model.named_parameters()):
-                        if i < 3:
-                            print(f"  {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
-                
-                # 检查 view_embed 的值（仅第一次）
-                if not hasattr(self, '_checked_view_embed'):
-                    if hasattr(self.cond_stage_model, 'main_image_encoder') and hasattr(self.cond_stage_model.main_image_encoder, 'view_embed'):
-                        view_embed = self.cond_stage_model.main_image_encoder.view_embed
-                        print(f"\n[Training Debug] view_embed check:")
-                        print(f"  view_embed shape: {view_embed.shape}")
-                        print(f"  view_embed mean: {view_embed.mean().item():.6f}")
-                        print(f"  view_embed std: {view_embed.std().item():.6f}")
-                        print(f"  view_embed requires_grad: {view_embed.requires_grad}")
-                        print(f"  view_embed is buffer: {'view_embed' in dict(self.cond_stage_model.main_image_encoder.named_buffers())}")
-                    self._checked_view_embed = True
-                print(f"{'='*70}\n")
                 
                 # 警告：如果梯度范数太大
                 if total_norm > 10.0:
-                    print(f"  ⚠ WARNING: Gradient norm is very large ({total_norm:.2f})!")
-                    print(f"     This may cause pretrained weights to be destroyed!")
-                    print(f"     Consider: 1) Lower learning rate, 2) Increase gradient clipping, 3) Check data preprocessing")
+                    print(f"  ⚠ CRITICAL WARNING: Gradient norm is very large ({total_norm:.2f})!")
+                    print(f"     This WILL cause pretrained weights to be destroyed!")
+                    print(f"     Immediate actions:")
+                    print(f"     1) Lower learning rate (current: {self.trainer.optimizers[0].param_groups[0]['lr']:.2e})")
+                    print(f"     2) Add gradient clipping (max_norm=1.0)")
+                    print(f"     3) Check data preprocessing (normalization, value ranges)")
+                elif total_norm > 5.0:
+                    print(f"  ⚠ WARNING: Gradient norm is large ({total_norm:.2f})")
+                    print(f"     Consider lowering learning rate or adding gradient clipping")
+                print(f"{'='*70}\n")
+
+    def training_step(self, batch, batch_idx, optimizer_idx=0):
+        loss = self.forward(batch)
+
+        # 监控初始权重和 view_embed（仅第一次）
+        if batch_idx == 0 and self.global_step == 0:
+            print(f"\n{'='*70}")
+            print(f"[Training Debug] Step {self.global_step}, Batch {batch_idx} (initialization check)")
+            print(f"  Loss: {loss.item():.6f}")
+            print(f"  Learning rate: {self.trainer.optimizers[0].param_groups[0]['lr']:.2e}")
+            
+            # 检查前几个参数的权重（仅第一次）
+            print(f"\n[Training Debug] Model weight check (first 3 params):")
+            for i, (name, param) in enumerate(self.model.named_parameters()):
+                if i < 3:
+                    print(f"  {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+            
+            # 检查 view_embed 的值（仅第一次）
+            if hasattr(self.cond_stage_model, 'main_image_encoder') and hasattr(self.cond_stage_model.main_image_encoder, 'view_embed'):
+                view_embed = self.cond_stage_model.main_image_encoder.view_embed
+                print(f"\n[Training Debug] view_embed check:")
+                print(f"  view_embed shape: {view_embed.shape}")
+                print(f"  view_embed mean: {view_embed.mean().item():.6f}")
+                print(f"  view_embed std: {view_embed.std().item():.6f}")
+                print(f"  view_embed requires_grad: {view_embed.requires_grad}")
+                print(f"  view_embed is buffer: {'view_embed' in dict(self.cond_stage_model.main_image_encoder.named_buffers())}")
+                print(f"  ℹ NOTE: view_embed is a FIXED positional encoding (sincos), NOT trainable")
+                print(f"     It uses deterministic initialization (same as pretrained model)")
+                print(f"     This is consistent with official Hunyuan3D-2 implementation")
+            print(f"{'='*70}\n")
 
         split = 'train'
         loss_dict = {
