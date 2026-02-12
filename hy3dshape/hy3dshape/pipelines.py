@@ -545,6 +545,10 @@ class Hunyuan3DDiTPipeline:
             for key, value in cond_input.items():
                 if isinstance(value[0], torch.Tensor):
                     cond_input[key] = torch.cat(value, dim=0)
+                elif key == 'view_idxs' and isinstance(value[0], list):
+                    # view_idxs 是 list of lists，需要展平：[[0,1,2,3], [0,1,2,3]] -> [[0,1,2,3], [0,1,2,3]]
+                    # 每个元素已经是列表，直接保留
+                    cond_input[key] = [item[0] if isinstance(item, list) and len(item) > 0 else item for item in value]
             return cond_input
             
         if isinstance(image, str) and not os.path.exists(image):

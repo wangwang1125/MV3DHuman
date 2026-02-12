@@ -393,7 +393,18 @@ class Diffuser(pl.LightningModule):
                 print(f"{'='*70}")
                 for key in ['image', 'normal', 'depth']:
                     if key in batch and batch[key] is not None:
-                        print(f"  {key}: shape={batch[key].shape}")
+                        value = batch[key]
+                        if isinstance(value, torch.Tensor):
+                            print(f"  {key}: shape={value.shape}")
+                        elif isinstance(value, dict):
+                            print(f"  {key}: dict with keys={list(value.keys())}")
+                        elif isinstance(value, list):
+                            if len(value) > 0 and isinstance(value[0], dict):
+                                print(f"  {key}: list of {len(value)} dicts, keys={list(value[0].keys())}")
+                            else:
+                                print(f"  {key}: list of length {len(value)}")
+                        else:
+                            print(f"  {key}: type={type(value)}")
                 print(f"{'='*70}\n")
                 self._printed_batch_info = True
             
