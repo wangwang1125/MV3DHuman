@@ -617,7 +617,8 @@ class PointCrossAttentionEncoder(nn.Module):
             input_sharpedge_pc = torch.zeros(B, 0, D, dtype=input_random_pc.dtype).to(pc.device)
             query_sharpedge_pc = torch.zeros(B, 0, D, dtype=query_random_pc.dtype).to(pc.device)
         else:
-            sharpedge_query_ratio = num_sharpedge_query / input_sharpedge_pc_size
+            input_sharpedge_pc_size = min(input_sharpedge_pc_size, sharpedge_pc.shape[1])
+            sharpedge_query_ratio = num_sharpedge_query / input_sharpedge_pc_size if input_sharpedge_pc_size > 0 else 1.0
             idx_sharpedge_pc = torch.randperm(sharpedge_pc.shape[1], device=sharpedge_pc.device)[
                                :input_sharpedge_pc_size]
             input_sharpedge_pc = sharpedge_pc[:, idx_sharpedge_pc, :]
