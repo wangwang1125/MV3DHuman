@@ -416,13 +416,15 @@ class Diffuser(pl.LightningModule):
                 # 单个样本的多视图输入：通过 pipeline 的 prepare_image 处理，得到排序后的 tensor 和 view_idxs
                 cond_inputs = self.pipeline.prepare_image(image_input, mask_input)
                 image_tensor = cond_inputs.pop('image')
+                mask_tensor = cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
                 # view_idxs 会在 cond_inputs 中，传递给 conditioner
-                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=cond_inputs.get('mask'), **cond_inputs)
+                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=mask_tensor, **cond_inputs)
             elif isinstance(image_input, list) and len(image_input) > 0 and isinstance(image_input[0], dict):
                 # batch 的多视图输入：list of dicts，通过 pipeline 的 prepare_image 处理
                 cond_inputs = self.pipeline.prepare_image(image_input, mask_input)
                 image_tensor = cond_inputs.pop('image')
-                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=cond_inputs.get('mask'), **cond_inputs)
+                mask_tensor = cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
+                rgb_contexts = self.cond_stage_model(image=image_tensor, text=batch.get('text'), mask=mask_tensor, **cond_inputs)
             else:
                 # 单视图输入：直接使用
                 rgb_contexts = self.cond_stage_model(image=image_input, text=batch.get('text'), mask=mask_input)
@@ -436,12 +438,14 @@ class Diffuser(pl.LightningModule):
                     # 单个样本的多视图 normal：通过 pipeline 的 prepare_image 处理
                     normal_cond_inputs = self.pipeline.prepare_image(normal_input, normal_mask_input)
                     normal_tensor = normal_cond_inputs.pop('image')
-                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_cond_inputs.get('mask'), **normal_cond_inputs)
+                    normal_mask_tensor = normal_cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
+                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_mask_tensor, **normal_cond_inputs)
                 elif isinstance(normal_input, list) and len(normal_input) > 0 and isinstance(normal_input[0], dict):
                     # batch 的多视图 normal：list of dicts，通过 pipeline 的 prepare_image 处理
                     normal_cond_inputs = self.pipeline.prepare_image(normal_input, normal_mask_input)
                     normal_tensor = normal_cond_inputs.pop('image')
-                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_cond_inputs.get('mask'), **normal_cond_inputs)
+                    normal_mask_tensor = normal_cond_inputs.pop('mask', None)  # 从 cond_inputs 中移除 mask，避免重复传递
+                    normal_contexts = self.cond_stage_model(image=normal_tensor, text=batch.get('text'), mask=normal_mask_tensor, **normal_cond_inputs)
                 else:
                     normal_contexts = self.cond_stage_model(image=normal_input, text=batch.get('text'), mask=normal_mask_input)
                 
