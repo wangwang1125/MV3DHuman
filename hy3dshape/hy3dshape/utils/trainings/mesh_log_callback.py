@@ -167,7 +167,7 @@ class ImageConditionalASLDiffuserLogger(Callback):
         batch_size = len(batch["surface"])
         replace = batch_size < self.num_samples
         ids = np.random.choice(batch_size, self.num_samples, replace=replace)
-
+        ids = ids.tolist()
         with torch.no_grad():
             # run text to mesh
             # keys = [batch["__key__"][i] for i in ids]
