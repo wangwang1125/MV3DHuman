@@ -206,14 +206,14 @@ class Diffuser(pl.LightningModule):
         # ========= config controlnet model ========= #
         self.controlnet = None
         self.control_in_channels = control_in_channels
-        self.num_views = denoiser_cfg.params.get('num_views', 1)  # Get num_views from config
+        self.num_views = denoiser_cfg.get('params', {}).get('num_views', 1)  # Get num_views from config
         
         if control_net_config is not None:
             if self.num_views > 1:
                 # Use multi-view ControlNet for multiple views
                 from ..controlnet_multiview import create_multiview_depth_controlnet
                 fusion_strategy = control_net_config.get('fusion_strategy', 'attention')
-                out_channels = denoiser_cfg.params.get('additional_cond_hidden_state', 768)
+                out_channels = denoiser_cfg.get('params', {}).get('additional_cond_hidden_state', 768)
                 
                 self.controlnet = create_multiview_depth_controlnet(
                     in_channels=control_in_channels or 1,
