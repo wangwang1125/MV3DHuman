@@ -2613,6 +2613,55 @@ if __name__ == '__main__':
             use_safetensors=False,
             device=args.device,
         )
+    
+    # 单视图 RGB 模式：若指定了 rgb_lora_path 则加载（多视图 RGB 已在 MULTIVIEW_RGB_MODE 分支内处理）
+    if args.rgb_lora_path and os.path.exists(args.rgb_lora_path) and not MULTIVIEW_RGB_MODE:
+        print(f"正在加载RGB LoRA/微调权重（单视图）: {args.rgb_lora_path}")
+        try:
+            if args.rgb_lora_path.endswith('.ckpt'):
+                ckpt = torch.load(args.rgb_lora_path, map_location='cpu')
+                if 'state_dict' in ckpt:
+                    state_dict = ckpt['state_dict']
+                    print(f"Checkpoint包含 {len(state_dict)} 个权重")
+                    lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+                    model_keys = [k for k in state_dict.keys() if k.startswith('model.')]
+                    print(f"  - 模型权重: {len(model_keys)} 个")
+                    print(f"  - LoRA参数: {len(lora_keys)} 个")
+                    success = False
+                    if hasattr(i23d_worker, 'model'):
+                        model_state_dict = {k[6:]: v for k, v in state_dict.items() if k.startswith('model.')}
+                        if lora_keys:
+                            print("检测到LoRA格式，加载RGB LoRA权重...")
+                            from peft import LoraConfig, get_peft_model
+                            lora_config = LoraConfig(
+                                r=8, lora_alpha=8,
+                                target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                lora_dropout=0.0,
+                            )
+                            i23d_worker.model = get_peft_model(i23d_worker.model, lora_config)
+                            i23d_worker.model.load_state_dict(model_state_dict, strict=False)
+                            print("✅ RGB LoRA权重加载成功（单视图）")
+                            success = True
+                        else:
+                            print("检测到全量微调格式，加载完整模型权重...")
+                            i23d_worker.model.load_state_dict(model_state_dict, strict=False)
+                            print("✅ 全量微调权重加载成功（单视图）")
+                            success = True
+                    if not success:
+                        print("❌ 未成功加载RGB权重")
+                else:
+                    print("❌ Checkpoint格式无效，缺少state_dict")
+            elif os.path.isdir(args.rgb_lora_path):
+                from peft import PeftModel
+                i23d_worker.model = PeftModel.from_pretrained(i23d_worker.model, args.rgb_lora_path)
+                print("✅ RGB LoRA权重加载成功（单视图，PEFT目录）")
+            else:
+                print(f"❌ 不支持的RGB权重格式: {args.rgb_lora_path}")
+        except Exception as e:
+            import traceback
+            print(f"❌ 加载RGB LoRA/微调权重失败: {e}")
+            traceback.print_exc()
+    
     if args.enable_flashvdm:
         mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
         i23d_worker.enable_flashvdm(mc_algo=mc_algo)
