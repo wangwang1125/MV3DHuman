@@ -286,12 +286,18 @@ class ImageConditionalFixASLDiffuserLogger(Callback):
         self.viewer = PyThreeJSViewer(settings={}, render_mode="WEBSITE")
 
         self.test_data_path = test_data_path
-        with open(self.test_data_path, 'r') as f:
-            data = json.load(f)
-            self.file_list = data['file_list']
-            self.file_folder = data['file_folder']
-            if max_size is not None:
-                self.file_list = self.file_list[:max_size]
+        if os.path.isfile(test_data_path):
+            with open(self.test_data_path, 'r') as f:
+                data = json.load(f)
+                self.file_list = data['file_list']
+                self.file_folder = data['file_folder']
+                if max_size is not None:
+                    self.file_list = self.file_list[:max_size]
+        else:
+            import warnings
+            warnings.warn(f"test_data_path not found: {test_data_path}, file_logger will skip saving test images.")
+            self.file_list = []
+            self.file_folder = ""
         self.kwargs = kwargs
         self.save_dir = save_dir
 
