@@ -176,8 +176,19 @@ class ImageConditionalASLDiffuserLogger(Callback):
             texts = [f'text_{i}'for i in ids]
             # description = [batch["description"][i] for i in ids]
             description = [f'desc_{i}' for i in ids]
-            images = batch["image"][ids]
-            mask_input = batch["mask"][ids] if 'mask' in batch else None
+            # 处理 image：可能是 list 或 tensor
+            if isinstance(batch["image"], list):
+                images = [batch["image"][i] for i in ids]
+            else:
+                images = batch["image"][ids]
+            # 处理 mask：可能是 list 或 tensor
+            if 'mask' in batch:
+                if isinstance(batch["mask"], list):
+                    mask_input = [batch["mask"][i] for i in ids]
+                else:
+                    mask_input = batch["mask"][ids]
+            else:
+                mask_input = None
             sample_batch = {
                 "__key__": keys,
                 "image": images,
@@ -196,7 +207,37 @@ class ImageConditionalASLDiffuserLogger(Callback):
                 output_type='latents2mesh'
             )
 
-            images = images.cpu().float().numpy()
+            # 处理 images：可能是 tensor、list of tensors 或 list of dicts
+            if isinstance(images, torch.Tensor):
+                # tensor 转换为 numpy，保持 batch 维度
+                images = images.cpu().float().numpy()
+            elif isinstance(images, list):
+                # 检查列表中的元素类型
+                if len(images) > 0 and isinstance(images[0], dict):
+                    # 如果是 list of dicts（多视图情况），无法直接转换为 numpy
+                    # 创建一个占位符数组用于可视化
+                    # 注意：在多视图情况下，实际图像数据在字典中，这里只是占位符
+                    images = [np.zeros((3, 224, 224), dtype=np.float32) for _ in images]
+                elif len(images) > 0 and isinstance(images[0], torch.Tensor):
+                    # 如果是 list of tensors，转换为 list of numpy arrays
+                    images = [img.cpu().float().numpy() if isinstance(img, torch.Tensor) else img for img in images]
+                elif len(images) > 0 and isinstance(images[0], np.ndarray):
+                    # 如果已经是 list of numpy arrays，保持不变
+                    pass
+                else:
+                    # 其他情况，尝试转换
+                    try:
+                        images = np.array(images)
+                    except Exception:
+                        # 如果转换失败，创建占位符
+                        images = [np.zeros((3, 224, 224), dtype=np.float32) for _ in images]
+            else:
+                # 其他类型，尝试转换
+                try:
+                    images = np.array(images)
+                except Exception:
+                    # 如果转换失败，创建占位符
+                    images = [np.zeros((3, 224, 224), dtype=np.float32)]
             # images = self.denormalize_image(images)
             # images = np.transpose(images, (0, 2, 3, 1))
             # images = ((images + 1) / 2 * 255).astype(np.uint8)
