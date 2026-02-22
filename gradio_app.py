@@ -898,7 +898,7 @@ def _gen_shape(
     # 处理法线图
     normal_data = None
     
-    # 多视图法线模式
+    # 多视图法线模式（必须提供法线）或 多视图RGB模式（可选法线）
     if MV_MODE and MULTIVIEW_NORMAL_MODE:
         start_normal_time = time.time()
         try:
@@ -926,6 +926,30 @@ def _gen_shape(
         except Exception as e:
             print(f"❌ 多视图法线图处理失败: {e}")
             raise gr.Error(f"多视图法线图处理失败: {str(e)}")
+    elif MV_MODE and MULTIVIEW_RGB_MODE:
+        # 多视图RGB模式：法线图为可选，仅当用户上传了法线时才处理
+        normal_provided = any([mv_normal_front, mv_normal_back, mv_normal_left, mv_normal_right])
+        if normal_provided:
+            start_normal_time = time.time()
+            try:
+                normal_files_dict = {}
+                if mv_normal_front is not None:
+                    normal_files_dict['front'] = mv_normal_front
+                if mv_normal_right is not None:
+                    normal_files_dict['right'] = mv_normal_right
+                if mv_normal_back is not None:
+                    normal_files_dict['back'] = mv_normal_back
+                if mv_normal_left is not None:
+                    normal_files_dict['left'] = mv_normal_left
+                normal_data = load_multiview_normals(normal_files_dict, target_size=518, num_views=args.num_views)
+                if args.device == 'cuda':
+                    normal_data['normal'] = normal_data['normal'].cuda()
+                    normal_data['normal_mask'] = normal_data['normal_mask'].cuda()
+                time_meta['multiview_normal processing (optional)'] = time.time() - start_normal_time
+                print(f"✅ 多视图RGB模式 - 可选法线图处理完成，形状: {normal_data['normal'].shape}")
+            except Exception as e:
+                print(f"❌ 多视图法线图处理失败（已忽略，仅使用RGB）: {e}")
+                normal_data = None
 
     # image to white model
     start_time = time.time()
@@ -1450,9 +1474,9 @@ def build_app():
                             mv_depth_left = gr.State(None)
                             mv_depth_right = gr.State(None)
                         
-                        # 如果启用多视图法线模式，添加法线图上传组件
-                        if MULTIVIEW_NORMAL_MODE:
-                            gr.Markdown(f"### 法线图 (RGB PNG) - {args.num_views}视图模式")
+                        # 如果启用多视图法线模式或多视图RGB模式（可选法线），添加法线图上传组件
+                        if MULTIVIEW_NORMAL_MODE or MULTIVIEW_RGB_MODE:
+                            gr.Markdown(f"### 法线图 (RGB PNG) - {args.num_views}视图模式" + ("（可选）" if MULTIVIEW_RGB_MODE else ""))
                             
                             # 根据视图数量动态创建上传组件
                             if args.num_views == 2:
@@ -1526,14 +1550,14 @@ def build_app():
                             
                             gr.Markdown(
                                 f"📋 **多视图法线图要求 ({args.num_views}视图模式):**\n"
-                                f"- 格式: RGB PNG图像文件\n" 
+                                f"- 格式: RGB PNG图像文件\n"
                                 f"- 尺寸: 建议与RGB图像相同（推荐518×518）\n"
                                 f"- {view_info}"
-                                f"- 至少提供一个视图的法线图\n"
-                                f"- 法线图应为RGB格式，表示表面法线方向\n\n"
+                                + (f"- 法线图为**可选**，仅上传RGB也可生成；上传法线可与RGB联合使用\n" if MULTIVIEW_RGB_MODE else f"- 至少提供一个视图的法线图\n")
+                                + f"- 法线图应为RGB格式，表示表面法线方向\n\n"
                                 f"💡 **使用提示:**\n"
                                 f"1. 按顺序上传各视图的RGB图像\n"
-                                f"2. 上传对应视图的法线图文件（RGB PNG格式）\n" 
+                                f"2. 上传对应视图的法线图文件（RGB PNG格式）\n"
                                 f"3. 点击生成按钮开始处理"
                             )
                         else:
