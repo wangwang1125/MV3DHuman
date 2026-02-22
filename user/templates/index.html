@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MH3D 人体三维重建系统</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Three.js for OBJ 3D preview -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/OBJLoader.js"></script>
+</head>
+<body>
+
+<!-- ═══════════════════ Header ═══════════════════ -->
+<header class="app-header">
+    <h1>MH3D 人体三维重建系统</h1>
+    <p class="subtitle">Multi-view Human 3D Reconstruction</p>
+    <div class="cloud-status" id="cloudStatus">
+        <span class="dot" id="cloudDot"></span>
+        <span id="cloudText">检查云端连接...</span>
+    </div>
+</header>
+
+<!-- ═══════════════════ Main Content ═══════════════════ -->
+<main class="app-main">
+
+    <!-- ─────── 左栏: 控制面板 ─────── -->
+    <section class="panel panel-left">
+        <div class="panel-title">输入控制</div>
+
+        <!-- Tab 切换 -->
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="tab-import" onclick="switchTab('tab-import', this)">导入模式</button>
+            <button class="tab-btn" data-tab="tab-capture" onclick="switchTab('tab-capture', this)">在线捕捉</button>
+        </div>
+
+        <!-- ─── 导入模式 ─── -->
+        <div class="tab-content active" id="tab-import">
+            <p class="hint">上传四个方位的 RGB 照片（必填，PNG/JPG）</p>
+            <div class="upload-grid">
+                <div class="upload-item" id="upload-front">
+                    <label>正面 (Front)</label>
+                    <div class="upload-box" onclick="triggerUpload('front')">
+                        <img id="preview-upload-front" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-front">点击上传</span>
+                    </div>
+                    <input type="file" id="file-front" accept="image/*" style="display:none"
+                           onchange="handleFileSelect('front', this)">
+                </div>
+                <div class="upload-item" id="upload-right">
+                    <label>右侧 (Right)</label>
+                    <div class="upload-box" onclick="triggerUpload('right')">
+                        <img id="preview-upload-right" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-right">点击上传</span>
+                    </div>
+                    <input type="file" id="file-right" accept="image/*" style="display:none"
+                           onchange="handleFileSelect('right', this)">
+                </div>
+                <div class="upload-item" id="upload-back">
+                    <label>背面 (Back)</label>
+                    <div class="upload-box" onclick="triggerUpload('back')">
+                        <img id="preview-upload-back" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-back">点击上传</span>
+                    </div>
+                    <input type="file" id="file-back" accept="image/*" style="display:none"
+                           onchange="handleFileSelect('back', this)">
+                </div>
+                <div class="upload-item" id="upload-left">
+                    <label>左侧 (Left)</label>
+                    <div class="upload-box" onclick="triggerUpload('left')">
+                        <img id="preview-upload-left" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-left">点击上传</span>
+                    </div>
+                    <input type="file" id="file-left" accept="image/*" style="display:none"
+                           onchange="handleFileSelect('left', this)">
+                </div>
+            </div>
+
+            <p class="hint hint-section">深度图（可选，16 位 PNG/TIFF，与 RGB 同序）</p>
+            <div class="upload-grid upload-grid-small">
+                <div class="upload-item">
+                    <label>正面 深度</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('front','depth')">
+                        <span class="upload-placeholder" id="ph-depth-front">可选</span>
+                        <input type="file" id="file-depth-front" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('front','depth',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>右侧 深度</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('right','depth')">
+                        <span class="upload-placeholder" id="ph-depth-right">可选</span>
+                        <input type="file" id="file-depth-right" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('right','depth',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>背面 深度</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('back','depth')">
+                        <span class="upload-placeholder" id="ph-depth-back">可选</span>
+                        <input type="file" id="file-depth-back" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('back','depth',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>左侧 深度</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('left','depth')">
+                        <span class="upload-placeholder" id="ph-depth-left">可选</span>
+                        <input type="file" id="file-depth-left" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('left','depth',this)">
+                    </div>
+                </div>
+            </div>
+
+            <p class="hint hint-section">法线贴图（可选，RGB PNG，与 RGB 同序）</p>
+            <div class="upload-grid upload-grid-small">
+                <div class="upload-item">
+                    <label>正面 法线</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('front','normal')">
+                        <span class="upload-placeholder" id="ph-normal-front">可选</span>
+                        <input type="file" id="file-normal-front" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('front','normal',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>右侧 法线</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('right','normal')">
+                        <span class="upload-placeholder" id="ph-normal-right">可选</span>
+                        <input type="file" id="file-normal-right" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('right','normal',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>背面 法线</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('back','normal')">
+                        <span class="upload-placeholder" id="ph-normal-back">可选</span>
+                        <input type="file" id="file-normal-back" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('back','normal',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>左侧 法线</label>
+                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('left','normal')">
+                        <span class="upload-placeholder" id="ph-normal-left">可选</span>
+                        <input type="file" id="file-normal-left" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('left','normal',this)">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─── 在线捕捉模式 ─── -->
+        <div class="tab-content" id="tab-capture">
+            <div class="capture-controls">
+                <button class="btn btn-primary" id="btnStartCamera" onclick="startCamera()">启动摄像头</button>
+                <button class="btn btn-secondary" id="btnStopCamera" onclick="stopCamera()" disabled>停止</button>
+                <button class="btn btn-secondary" id="btnResetCapture" onclick="resetCapture()">重置拍摄</button>
+                <button class="btn btn-outline" id="btnManualCapture" onclick="manualCapture()" disabled>手动拍照</button>
+            </div>
+
+            <div class="video-container" id="videoContainer">
+                <img id="videoStream" src="" alt="视频流">
+                <div class="video-placeholder" id="videoPlaceholder">
+                    <p>点击"启动摄像头"开始</p>
+                    <p class="small">系统将自动检测您的姿态并引导拍摄</p>
+                </div>
+            </div>
+
+            <div class="capture-status" id="captureStatus">
+                <div class="status-row">
+                    <span class="status-label">当前视图:</span>
+                    <span class="status-value" id="statusView">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="status-label">站位状态:</span>
+                    <span class="status-value" id="statusStanding">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="status-label">下一个需要:</span>
+                    <span class="status-value" id="statusRequired">正面</span>
+                </div>
+                <div class="capture-progress">
+                    <div class="progress-item" id="prog-front"><span>正面</span></div>
+                    <div class="progress-item" id="prog-right"><span>右侧</span></div>
+                    <div class="progress-item" id="prog-back"><span>背面</span></div>
+                    <div class="progress-item" id="prog-left"><span>左侧</span></div>
+                </div>
+            </div>
+
+            <!-- 语音开关 -->
+            <div class="voice-toggle">
+                <label>
+                    <input type="checkbox" id="voiceEnabled" checked>
+                    语音引导
+                </label>
+            </div>
+        </div>
+
+        <!-- ─── 参数设置 ─── -->
+        <div class="params-section">
+            <div class="panel-title" style="margin-top:16px">生成参数</div>
+            <div class="param-grid">
+                <div class="param-item">
+                    <label for="paramSeed">随机种子</label>
+                    <input type="number" id="paramSeed" value="1234" min="0" max="4294967295">
+                </div>
+                <div class="param-item">
+                    <label for="paramSteps">推理步数</label>
+                    <input type="number" id="paramSteps" value="50" min="1" max="100">
+                </div>
+                <div class="param-item">
+                    <label for="paramResolution">Octree 分辨率</label>
+                    <input type="number" id="paramResolution" value="256" min="64" max="512" step="64">
+                </div>
+                <div class="param-item">
+                    <label for="paramGuidance">引导强度</label>
+                    <input type="number" id="paramGuidance" value="5.0" min="0.1" max="20.0" step="0.5">
+                </div>
+                <div class="param-item">
+                    <label for="paramChunks">Chunks</label>
+                    <input type="number" id="paramChunks" value="200000" min="1000" max="500000" step="1000">
+                </div>
+                <div class="param-item">
+                    <label for="paramHeight">身高 (mm)</label>
+                    <input type="number" id="paramHeight" value="1750" min="50" max="2500">
+                </div>
+            </div>
+            <div class="param-item" style="margin-top:8px">
+                <label>
+                    <input type="checkbox" id="paramRembg" checked>
+                    自动去除背景
+                </label>
+            </div>
+        </div>
+
+        <!-- 生成按钮 -->
+        <button class="btn btn-generate" id="btnGenerate" onclick="startGeneration()">
+            生成 3D 模型
+        </button>
+    </section>
+
+    <!-- ─────── 中栏: 3D 结果 ─────── -->
+    <section class="panel panel-center">
+        <div class="panel-title">3D 模型预览</div>
+
+        <div class="model-viewer-wrap" id="modelViewerWrap">
+            <div class="model-placeholder" id="modelPlaceholder">
+                <p>欢迎使用 MH3D 人体三维重建系统</p>
+                <p class="small">生成完成后，3D 模型将在此展示</p>
+            </div>
+            <canvas id="modelCanvas" style="display:none; width:100%; height:100%;"></canvas>
+        </div>
+
+        <!-- 进度条 -->
+        <div class="generation-progress" id="generationProgress" style="display:none">
+            <div class="progress-bar-wrap">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <span class="progress-text" id="progressText">准备中...</span>
+        </div>
+
+        <!-- 下载区 -->
+        <div class="download-section" id="downloadSection" style="display:none">
+            <a class="btn btn-primary btn-download" id="btnDownload" href="#" download>
+                下载 OBJ 模型
+            </a>
+        </div>
+    </section>
+
+    <!-- ─────── 右栏: 四视图预览 ─────── -->
+    <section class="panel panel-right">
+        <div class="panel-title">四视图预览</div>
+
+        <div class="preview-tabs">
+            <button class="preview-tab active" onclick="switchPreviewTab('original', this)">拍摄/上传原图</button>
+            <button class="preview-tab" onclick="switchPreviewTab('rembg', this)">去背景结果</button>
+        </div>
+
+        <!-- 原始四视图 -->
+        <div class="preview-content active" id="preview-original">
+            <div class="four-view-grid">
+                <div class="view-cell">
+                    <span class="view-label">正面</span>
+                    <div class="view-img-wrap">
+                        <img id="view-original-front" src="" alt="">
+                        <span class="view-empty" id="empty-front">未拍摄</span>
+                    </div>
+                </div>
+                <div class="view-cell">
+                    <span class="view-label">右侧</span>
+                    <div class="view-img-wrap">
+                        <img id="view-original-right" src="" alt="">
+                        <span class="view-empty" id="empty-right">未拍摄</span>
+                    </div>
+                </div>
+                <div class="view-cell">
+                    <span class="view-label">背面</span>
+                    <div class="view-img-wrap">
+                        <img id="view-original-back" src="" alt="">
+                        <span class="view-empty" id="empty-back">未拍摄</span>
+                    </div>
+                </div>
+                <div class="view-cell">
+                    <span class="view-label">左侧</span>
+                    <div class="view-img-wrap">
+                        <img id="view-original-left" src="" alt="">
+                        <span class="view-empty" id="empty-left">未拍摄</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 去背景四视图 -->
+        <div class="preview-content" id="preview-rembg">
+            <div class="four-view-grid">
+                <div class="view-cell">
+                    <span class="view-label">正面 (RemBG)</span>
+                    <div class="view-img-wrap">
+                        <img id="view-rembg-front" src="" alt="">
+                        <span class="view-empty" id="rembg-empty-front">待生成</span>
+                    </div>
+                </div>
+                <div class="view-cell">
+                    <span class="view-label">右侧 (RemBG)</span>
+                    <div class="view-img-wrap">
+                        <img id="view-rembg-right" src="" alt="">
+                        <span class="view-empty" id="rembg-empty-right">待生成</span>
+                    </div>
+                </div>
+                <div class="view-cell">
+                    <span class="view-label">背面 (RemBG)</span>
+                    <div class="view-img-wrap">
+                        <img id="view-rembg-back" src="" alt="">
+                        <span class="view-empty" id="rembg-empty-back">待生成</span>
+                    </div>
+                </div>
+                <div class="view-cell">
+                    <span class="view-label">左侧 (RemBG)</span>
+                    <div class="view-img-wrap">
+                        <img id="view-rembg-left" src="" alt="">
+                        <span class="view-empty" id="rembg-empty-left">待生成</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<footer class="app-footer">
+    <span>MH3D Human 3D Reconstruction System &copy; 2026</span>
+</footer>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
