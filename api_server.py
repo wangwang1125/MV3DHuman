@@ -81,6 +81,19 @@ async def update_task_status(uid, status, message=None, file_path=None):
     logger.info(f"Task {uid_str} status updated to: {status}")
 
 
+def _matted_images_base64(save_dir: str, uid: str) -> dict:
+    """若存在抠图四视图文件，则返回 base64 字段，否则返回空 dict。"""
+    out = {}
+    for view in ('front', 'right', 'back', 'left'):
+        path = os.path.join(save_dir, f'{uid}_matted_{view}.png')
+        if os.path.isfile(path):
+            try:
+                out[f'image_{view}_matted_base64'] = base64.b64encode(open(path, 'rb').read()).decode()
+            except Exception:
+                pass
+    return out
+
+
 def select_worker():
     """
     Select a worker using load balancing strategy.
@@ -266,12 +279,13 @@ async def status(uid: str):
         status_str = task_info.get('status', 'processing')
         
         if status_str == 'completed':
-            # Read and return the generated file
+            # Read and return the generated file，并附带抠完图的四视图（若有）
             file_path = task_info.get('file_path')
             if file_path and os.path.exists(file_path):
                 try:
                     base64_str = base64.b64encode(open(file_path, 'rb').read()).decode()
                     response = {'status': 'completed', 'model_base64': base64_str}
+                    response.update(_matted_images_base64(SAVE_DIR, uid))
                     return JSONResponse(response, status_code=200)
                 except Exception as e:
                     logger.error(f"Error reading file {file_path}: {e}")
@@ -285,6 +299,7 @@ async def status(uid: str):
                     try:
                         base64_str = base64.b64encode(open(mesh_file_path, 'rb').read()).decode()
                         response = {'status': 'completed', 'model_base64': base64_str}
+                        response.update(_matted_images_base64(SAVE_DIR, uid))
                         return JSONResponse(response, status_code=200)
                     except Exception as e:
                         logger.error(f"Error reading file {mesh_file_path}: {e}")
@@ -310,6 +325,7 @@ async def status(uid: str):
             try:
                 base64_str = base64.b64encode(open(mesh_file_path, 'rb').read()).decode()
                 response = {'status': 'completed', 'model_base64': base64_str}
+                response.update(_matted_images_base64(SAVE_DIR, uid))
                 return JSONResponse(response, status_code=200)
             except Exception as e:
                 logger.error(f"Error reading file {mesh_file_path}: {e}")

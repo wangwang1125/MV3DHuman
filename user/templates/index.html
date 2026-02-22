@@ -41,111 +41,39 @@
             <div class="upload-grid">
                 <div class="upload-item" id="upload-front">
                     <label>正面 (Front)</label>
-                    <div class="upload-box" onclick="triggerUpload('front')">
+                    <div class="upload-box" data-view="front" data-type="rgb" onclick="triggerUpload('front')" title="点击或拖拽图片到此处">
                         <img id="preview-upload-front" src="" alt="" style="display:none">
-                        <span class="upload-placeholder" id="ph-front">点击上传</span>
+                        <span class="upload-placeholder" id="ph-front">点击或拖拽上传</span>
                     </div>
                     <input type="file" id="file-front" accept="image/*" style="display:none"
                            onchange="handleFileSelect('front', this)">
                 </div>
                 <div class="upload-item" id="upload-right">
                     <label>右侧 (Right)</label>
-                    <div class="upload-box" onclick="triggerUpload('right')">
+                    <div class="upload-box" data-view="right" data-type="rgb" onclick="triggerUpload('right')" title="点击或拖拽图片到此处">
                         <img id="preview-upload-right" src="" alt="" style="display:none">
-                        <span class="upload-placeholder" id="ph-right">点击上传</span>
+                        <span class="upload-placeholder" id="ph-right">点击或拖拽上传</span>
                     </div>
                     <input type="file" id="file-right" accept="image/*" style="display:none"
                            onchange="handleFileSelect('right', this)">
                 </div>
                 <div class="upload-item" id="upload-back">
                     <label>背面 (Back)</label>
-                    <div class="upload-box" onclick="triggerUpload('back')">
+                    <div class="upload-box" data-view="back" data-type="rgb" onclick="triggerUpload('back')" title="点击或拖拽图片到此处">
                         <img id="preview-upload-back" src="" alt="" style="display:none">
-                        <span class="upload-placeholder" id="ph-back">点击上传</span>
+                        <span class="upload-placeholder" id="ph-back">点击或拖拽上传</span>
                     </div>
                     <input type="file" id="file-back" accept="image/*" style="display:none"
                            onchange="handleFileSelect('back', this)">
                 </div>
                 <div class="upload-item" id="upload-left">
                     <label>左侧 (Left)</label>
-                    <div class="upload-box" onclick="triggerUpload('left')">
+                    <div class="upload-box" data-view="left" data-type="rgb" onclick="triggerUpload('left')" title="点击或拖拽图片到此处">
                         <img id="preview-upload-left" src="" alt="" style="display:none">
-                        <span class="upload-placeholder" id="ph-left">点击上传</span>
+                        <span class="upload-placeholder" id="ph-left">点击或拖拽上传</span>
                     </div>
                     <input type="file" id="file-left" accept="image/*" style="display:none"
                            onchange="handleFileSelect('left', this)">
-                </div>
-            </div>
-
-            <p class="hint hint-section">深度图（可选，16 位 PNG/TIFF，与 RGB 同序）</p>
-            <div class="upload-grid upload-grid-small">
-                <div class="upload-item">
-                    <label>正面 深度</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('front','depth')">
-                        <span class="upload-placeholder" id="ph-depth-front">可选</span>
-                        <input type="file" id="file-depth-front" accept=".png,.tiff,.tif" style="display:none"
-                               onchange="handleFileSelectExtra('front','depth',this)">
-                    </div>
-                </div>
-                <div class="upload-item">
-                    <label>右侧 深度</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('right','depth')">
-                        <span class="upload-placeholder" id="ph-depth-right">可选</span>
-                        <input type="file" id="file-depth-right" accept=".png,.tiff,.tif" style="display:none"
-                               onchange="handleFileSelectExtra('right','depth',this)">
-                    </div>
-                </div>
-                <div class="upload-item">
-                    <label>背面 深度</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('back','depth')">
-                        <span class="upload-placeholder" id="ph-depth-back">可选</span>
-                        <input type="file" id="file-depth-back" accept=".png,.tiff,.tif" style="display:none"
-                               onchange="handleFileSelectExtra('back','depth',this)">
-                    </div>
-                </div>
-                <div class="upload-item">
-                    <label>左侧 深度</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('left','depth')">
-                        <span class="upload-placeholder" id="ph-depth-left">可选</span>
-                        <input type="file" id="file-depth-left" accept=".png,.tiff,.tif" style="display:none"
-                               onchange="handleFileSelectExtra('left','depth',this)">
-                    </div>
-                </div>
-            </div>
-
-            <p class="hint hint-section">法线贴图（可选，RGB PNG，与 RGB 同序）</p>
-            <div class="upload-grid upload-grid-small">
-                <div class="upload-item">
-                    <label>正面 法线</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('front','normal')">
-                        <span class="upload-placeholder" id="ph-normal-front">可选</span>
-                        <input type="file" id="file-normal-front" accept="image/*" style="display:none"
-                               onchange="handleFileSelectExtra('front','normal',this)">
-                    </div>
-                </div>
-                <div class="upload-item">
-                    <label>右侧 法线</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('right','normal')">
-                        <span class="upload-placeholder" id="ph-normal-right">可选</span>
-                        <input type="file" id="file-normal-right" accept="image/*" style="display:none"
-                               onchange="handleFileSelectExtra('right','normal',this)">
-                    </div>
-                </div>
-                <div class="upload-item">
-                    <label>背面 法线</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('back','normal')">
-                        <span class="upload-placeholder" id="ph-normal-back">可选</span>
-                        <input type="file" id="file-normal-back" accept="image/*" style="display:none"
-                               onchange="handleFileSelectExtra('back','normal',this)">
-                    </div>
-                </div>
-                <div class="upload-item">
-                    <label>左侧 法线</label>
-                    <div class="upload-box upload-box-small" onclick="triggerUploadExtra('left','normal')">
-                        <span class="upload-placeholder" id="ph-normal-left">可选</span>
-                        <input type="file" id="file-normal-left" accept="image/*" style="display:none"
-                               onchange="handleFileSelectExtra('left','normal',this)">
-                    </div>
                 </div>
             </div>
         </div>
@@ -196,48 +124,6 @@
                 </label>
             </div>
         </div>
-
-        <!-- ─── 参数设置 ─── -->
-        <div class="params-section">
-            <div class="panel-title" style="margin-top:16px">生成参数</div>
-            <div class="param-grid">
-                <div class="param-item">
-                    <label for="paramSeed">随机种子</label>
-                    <input type="number" id="paramSeed" value="1234" min="0" max="4294967295">
-                </div>
-                <div class="param-item">
-                    <label for="paramSteps">推理步数</label>
-                    <input type="number" id="paramSteps" value="50" min="1" max="100">
-                </div>
-                <div class="param-item">
-                    <label for="paramResolution">Octree 分辨率</label>
-                    <input type="number" id="paramResolution" value="256" min="64" max="512" step="64">
-                </div>
-                <div class="param-item">
-                    <label for="paramGuidance">引导强度</label>
-                    <input type="number" id="paramGuidance" value="5.0" min="0.1" max="20.0" step="0.5">
-                </div>
-                <div class="param-item">
-                    <label for="paramChunks">Chunks</label>
-                    <input type="number" id="paramChunks" value="200000" min="1000" max="500000" step="1000">
-                </div>
-                <div class="param-item">
-                    <label for="paramHeight">身高 (mm)</label>
-                    <input type="number" id="paramHeight" value="1750" min="50" max="2500">
-                </div>
-            </div>
-            <div class="param-item" style="margin-top:8px">
-                <label>
-                    <input type="checkbox" id="paramRembg" checked>
-                    自动去除背景
-                </label>
-            </div>
-        </div>
-
-        <!-- 生成按钮 -->
-        <button class="btn btn-generate" id="btnGenerate" onclick="startGeneration()">
-            生成 3D 模型
-        </button>
     </section>
 
     <!-- ─────── 中栏: 3D 结果 ─────── -->
@@ -265,6 +151,125 @@
             <a class="btn btn-primary btn-download" id="btnDownload" href="#" download>
                 下载 OBJ 模型
             </a>
+        </div>
+
+        <!-- ─── 3D 预览下方：法线 / 深度 / 参数（导入模式用） ─── -->
+        <div class="below-preview">
+            <p class="hint hint-section">法线贴图（可选）</p>
+            <div class="upload-grid upload-grid-small upload-grid-4">
+                <div class="upload-item">
+                    <label>正面</label>
+                    <div class="upload-box upload-box-small" data-view="front" data-type="normal" onclick="triggerUploadExtra('front','normal')" title="点击或拖拽法线图">
+                        <img id="preview-normal-front" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-normal-front">可选</span>
+                        <input type="file" id="file-normal-front" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('front','normal',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>右侧</label>
+                    <div class="upload-box upload-box-small" data-view="right" data-type="normal" onclick="triggerUploadExtra('right','normal')" title="点击或拖拽法线图">
+                        <img id="preview-normal-right" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-normal-right">可选</span>
+                        <input type="file" id="file-normal-right" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('right','normal',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>背面</label>
+                    <div class="upload-box upload-box-small" data-view="back" data-type="normal" onclick="triggerUploadExtra('back','normal')" title="点击或拖拽法线图">
+                        <img id="preview-normal-back" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-normal-back">可选</span>
+                        <input type="file" id="file-normal-back" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('back','normal',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>左侧</label>
+                    <div class="upload-box upload-box-small" data-view="left" data-type="normal" onclick="triggerUploadExtra('left','normal')" title="点击或拖拽法线图">
+                        <img id="preview-normal-left" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-normal-left">可选</span>
+                        <input type="file" id="file-normal-left" accept="image/*" style="display:none"
+                               onchange="handleFileSelectExtra('left','normal',this)">
+                    </div>
+                </div>
+            </div>
+
+            <p class="hint hint-section">深度图（可选）</p>
+            <div class="upload-grid upload-grid-small upload-grid-4">
+                <div class="upload-item">
+                    <label>正面</label>
+                    <div class="upload-box upload-box-small" data-view="front" data-type="depth" onclick="triggerUploadExtra('front','depth')" title="点击或拖拽深度图">
+                        <img id="preview-depth-front" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-depth-front">可选</span>
+                        <input type="file" id="file-depth-front" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('front','depth',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>右侧</label>
+                    <div class="upload-box upload-box-small" data-view="right" data-type="depth" onclick="triggerUploadExtra('right','depth')" title="点击或拖拽深度图">
+                        <img id="preview-depth-right" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-depth-right">可选</span>
+                        <input type="file" id="file-depth-right" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('right','depth',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>背面</label>
+                    <div class="upload-box upload-box-small" data-view="back" data-type="depth" onclick="triggerUploadExtra('back','depth')" title="点击或拖拽深度图">
+                        <img id="preview-depth-back" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-depth-back">可选</span>
+                        <input type="file" id="file-depth-back" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('back','depth',this)">
+                    </div>
+                </div>
+                <div class="upload-item">
+                    <label>左侧</label>
+                    <div class="upload-box upload-box-small" data-view="left" data-type="depth" onclick="triggerUploadExtra('left','depth')" title="点击或拖拽深度图">
+                        <img id="preview-depth-left" src="" alt="" style="display:none">
+                        <span class="upload-placeholder" id="ph-depth-left">可选</span>
+                        <input type="file" id="file-depth-left" accept=".png,.tiff,.tif" style="display:none"
+                               onchange="handleFileSelectExtra('left','depth',this)">
+                    </div>
+                </div>
+            </div>
+
+            <div class="params-section">
+                <div class="panel-title">生成参数</div>
+                <div class="param-grid">
+                    <div class="param-item">
+                        <label for="paramSeed">种子</label>
+                        <input type="number" id="paramSeed" value="1234" min="0" max="4294967295">
+                    </div>
+                    <div class="param-item">
+                        <label for="paramSteps">步数</label>
+                        <input type="number" id="paramSteps" value="50" min="1" max="100">
+                    </div>
+                    <div class="param-item">
+                        <label for="paramResolution">Octree</label>
+                        <input type="number" id="paramResolution" value="256" min="64" max="512" step="64">
+                    </div>
+                    <div class="param-item">
+                        <label for="paramGuidance">引导</label>
+                        <input type="number" id="paramGuidance" value="5.0" min="0.1" max="20.0" step="0.5">
+                    </div>
+                    <div class="param-item">
+                        <label for="paramChunks">Chunks</label>
+                        <input type="number" id="paramChunks" value="200000" min="1000" max="500000" step="1000">
+                    </div>
+                </div>
+                <div class="param-item" style="margin-top:6px">
+                    <label>
+                        <input type="checkbox" id="paramRembg" checked>
+                        自动去背景
+                    </label>
+                </div>
+            </div>
+
+            <button class="btn btn-generate" id="btnGenerate" onclick="startGeneration()">
+                生成 3D 模型
+            </button>
         </div>
     </section>
 

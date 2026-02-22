@@ -42,35 +42,46 @@ class MH3DApiClient:
     async def submit_task(
         self,
         images: dict[str, bytes],
+        normals: Optional[dict[str, bytes]] = None,
+        depths: Optional[dict[str, bytes]] = None,
         remove_background: bool = True,
         seed: int = 1234,
         octree_resolution: int = 256,
         num_inference_steps: int = 50,
         guidance_scale: float = 5.0,
         num_chunks: int = 200000,
-        height_mm: float = 1750,
     ) -> str:
         """
-        提交四视图生成任务。
+        提交生成任务。至少一张 RGB 图即可，法线/深度可选。
 
         Args:
-            images: {"front": png_bytes, "right": ..., "back": ..., "left": ...}
+            images: 至少包含一个视图，如 {"front": png_bytes} 或 {"front": ..., "right": ...}
+            normals: 可选 {"front": bytes, ...}，参与推理
+            depths: 可选 {"front": bytes, ...}，仅接收不参与推理
         Returns:
             任务 uid
         """
+        if not images or not any(images.get(v) for v in ("front", "right", "back", "left")):
+            raise ValueError("至少需要提供一张 RGB 图（front/right/back/left 至少一个）")
         payload = {
-            "image_front": base64.b64encode(images["front"]).decode(),
-            "image_right": base64.b64encode(images["right"]).decode(),
-            "image_back": base64.b64encode(images["back"]).decode(),
-            "image_left": base64.b64encode(images["left"]).decode(),
             "remove_background": remove_background,
             "seed": seed,
             "octree_resolution": octree_resolution,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "num_chunks": num_chunks,
-            "height_mm": height_mm,
         }
+        for v in ("front", "right", "back", "left"):
+            if v in images and images[v]:
+                payload[f"image_{v}"] = base64.b64encode(images[v]).decode()
+        if normals:
+            for v in ("front", "right", "back", "left"):
+                if v in normals and normals[v]:
+                    payload[f"normal_{v}"] = base64.b64encode(normals[v]).decode()
+        if depths:
+            for v in ("front", "right", "back", "left"):
+                if v in depths and depths[v]:
+                    payload[f"depth_{v}"] = base64.b64encode(depths[v]).decode()
         client = await self._get_client()
         resp = await client.post(f"{self.base_url}/send", json=payload, timeout=30.0)
         resp.raise_for_status()
@@ -85,7 +96,8 @@ class MH3DApiClient:
         查询任务状态。
 
         Returns:
-            {"status": "pending|processing|completed|error", "model_base64"?: str, "message"?: str}
+            status, model_base64（完成时）, message（错误时）,
+            以及完成时可能的 image_front_matted_base64 等抠图四视图。
         """
         client = await self._get_client()
         resp = await client.get(f"{self.base_url}/status/{uid}", timeout=15.0)
@@ -130,19 +142,29 @@ class MH3DApiClient:
         同步生成（POST /generate），返回 OBJ 文件 bytes。
         适用于不需要进度反馈的场景。
         """
+        if not images or not any(images.get(v) for v in ("front", "right", "back", "left")):
+            raise ValueError("至少需要提供一张 RGB 图（front/right/back/left 至少一个）")
         payload = {
-            "image_front": base64.b64encode(images["front"]).decode(),
-            "image_right": base64.b64encode(images["right"]).decode(),
-            "image_back": base64.b64encode(images["back"]).decode(),
-            "image_left": base64.b64encode(images["left"]).decode(),
             "remove_background": kwargs.get("remove_background", True),
             "seed": kwargs.get("seed", 1234),
             "octree_resolution": kwargs.get("octree_resolution", 256),
             "num_inference_steps": kwargs.get("num_inference_steps", 50),
             "guidance_scale": kwargs.get("guidance_scale", 5.0),
             "num_chunks": kwargs.get("num_chunks", 200000),
-            "height_mm": kwargs.get("height_mm", 1750),
         }
+        for v in ("front", "right", "back", "left"):
+            if v in images and images[v]:
+                payload[f"image_{v}"] = base64.b64encode(images[v]).decode()
+        normals = kwargs.get("normals")
+        depths = kwargs.get("depths")
+        if normals:
+            for v in ("front", "right", "back", "left"):
+                if v in normals and normals[v]:
+                    payload[f"normal_{v}"] = base64.b64encode(normals[v]).decode()
+        if depths:
+            for v in ("front", "right", "back", "left"):
+                if v in depths and depths[v]:
+                    payload[f"depth_{v}"] = base64.b64encode(depths[v]).decode()
         client = await self._get_client()
         resp = await client.post(
             f"{self.base_url}/generate", json=payload, timeout=REQUEST_TIMEOUT

@@ -220,35 +220,46 @@ async def generate(request: Request):
     if mode == "capture":
         for v in VIEW_ORDER:
             png = camera.get_captured_image_png(v)
-            if not png:
-                return JSONResponse({"error": f"捕捉模式下缺少 {v} 视图"}, status_code=400)
-            images[v] = png
+            if png:
+                images[v] = png
     else:
         for v in VIEW_ORDER:
-            if uploaded_views[v] is None:
-                return JSONResponse({"error": f"导入模式下缺少 {v} 视图"}, status_code=400)
-            images[v] = uploaded_views[v]
+            if uploaded_views[v] is not None:
+                images[v] = uploaded_views[v]
+
+    if not images:
+        return JSONResponse({"error": "至少需要提供一张 RGB 图（任意视图）"}, status_code=400)
+
+    normals = {v: uploaded_normals[v] for v in VIEW_ORDER if uploaded_normals.get(v)} or None
+    depths = {v: uploaded_depths[v] for v in VIEW_ORDER if uploaded_depths.get(v)} or None
 
     task_id = str(uuid.uuid4())[:8]
     task_results[task_id] = {"status": "submitting", "uid": None, "start_time": time.time()}
 
-    asyncio.create_task(_run_generation(task_id, images, params))
+    asyncio.create_task(_run_generation(task_id, images, params, normals, depths))
 
     return {"ok": True, "task_id": task_id}
 
 
-async def _run_generation(task_id: str, images: dict[str, bytes], params: dict):
+async def _run_generation(
+    task_id: str,
+    images: dict[str, bytes],
+    params: dict,
+    normals: Optional[dict[str, bytes]] = None,
+    depths: Optional[dict[str, bytes]] = None,
+):
     try:
         task_results[task_id]["status"] = "submitting"
         uid = await api_client.submit_task(
             images,
+            normals=normals,
+            depths=depths,
             remove_background=params.get("remove_background", True),
             seed=params.get("seed", 1234),
             octree_resolution=params.get("octree_resolution", 256),
             num_inference_steps=params.get("num_inference_steps", 50),
             guidance_scale=params.get("guidance_scale", 5.0),
             num_chunks=params.get("num_chunks", 200000),
-            height_mm=params.get("height_mm", 1750),
         )
         task_results[task_id]["uid"] = uid
         task_results[task_id]["status"] = "pending"
@@ -274,11 +285,17 @@ async def _run_generation(task_id: str, images: dict[str, bytes], params: dict):
             out_path = OUTPUT_DIR / f"{task_id}.obj"
             out_path.write_bytes(model_bytes)
 
+            has_matted = any(result.get(k) for k in (
+                "image_front_matted_base64", "image_right_matted_base64",
+                "image_back_matted_base64", "image_left_matted_base64",
+            ))
             task_results[task_id]["status"] = "completed"
             task_results[task_id]["file"] = str(out_path)
             task_results[task_id]["filename"] = f"{task_id}.obj"
+            task_results[task_id]["has_matted_views"] = has_matted
 
             _save_input_images(task_id, images)
+            _save_matted_images(task_id, result)
 
             await _broadcast_ws({
                 "type": "task_status",
@@ -286,6 +303,7 @@ async def _run_generation(task_id: str, images: dict[str, bytes], params: dict):
                 "status": "completed",
                 "uid": uid,
                 "filename": f"{task_id}.obj",
+                "has_matted_views": has_matted,
             })
         else:
             msg = result.get("message", "Unknown error")
@@ -314,6 +332,20 @@ def _save_input_images(task_id: str, images: dict[str, bytes]):
     task_dir.mkdir(exist_ok=True)
     for view, data in images.items():
         (task_dir / f"{view}.png").write_bytes(data)
+
+
+def _save_matted_images(task_id: str, result: dict):
+    """将 API 返回的抠图四视图 base64 保存到任务目录，供预览使用。"""
+    task_dir = OUTPUT_DIR / task_id
+    task_dir.mkdir(exist_ok=True)
+    for view in VIEW_ORDER:
+        key = f"image_{view}_matted_base64"
+        b64 = result.get(key)
+        if b64:
+            try:
+                (task_dir / f"{view}_matted.png").write_bytes(base64.b64decode(b64))
+            except Exception:
+                pass
 
 
 async def _broadcast_ws(msg: dict):

@@ -1,9 +1,10 @@
 #!/bin/bash
-# 启动多视图RGB重建 API 服务器
+# 启动多视图RGB重建 API 服务器（参考 start_multiview_rgb_gradio_mv.sh）
+# 接口：接收四视图 RGB、可选法线图、可选深度图（深度不参与推理）；返回含抠图四视图
 
-# 设置默认参数
-MODEL_PATH="tencent/Hunyuan3D-2.1"
-SUBFOLDER="hunyuan3d-dit-v2-1"
+# 设置默认参数（与 gradio_mv 一致：Hunyuan3D-2mv）
+MODEL_PATH="tencent/Hunyuan3D-2mv"
+SUBFOLDER="hunyuan3d-dit-v2-mv"
 PORT=6008
 HOST="0.0.0.0"
 DEVICE="cuda"
@@ -17,64 +18,96 @@ BATCH_TIMEOUT=1.0  # 批处理超时时间（秒），等待多久后即使未�
 NUM_WORKERS=2      # Worker 实例数量（默认2个，提高并发能力）
 
 # 多视图RGB全量微调checkpoint路径（根据实际情况修改）
-# 优先级：全量微调checkpoint > LoRA checkpoint
+# 优先级：全量微调checkpoint > LoRA checkpoint，与 gradio_mv 一致优先 mv 版本
 RGB_CHECKPOINT_PATH=""
 
 # 1. 首先检查是否已指定具体的checkpoint路径
 if [ -n "$RGB_CHECKPOINT_PATH" ] && [ -f "$RGB_CHECKPOINT_PATH" ]; then
     echo "✅ 使用指定的checkpoint: $RGB_CHECKPOINT_PATH"
 else
-    # 2. 优先查找全量微调的checkpoint (.ckpt文件)
+    # 2. 优先查找全量微调的checkpoint (.ckpt文件) - mv版本
     echo "正在查找最新的checkpoint..."
-    echo "1. 查找全量微调checkpoint (.ckpt)..."
+    echo "1. 查找全量微调checkpoint (.ckpt) - mv版本..."
     FINETUNING_DIRS=(
-        "./hy3dshape/output_folder/dit/multiview_rgb_finetuning/ckpt"
-        "./output_folder/dit/multiview_rgb_finetuning/ckpt"
-        "hy3dshape/output_folder/dit/multiview_rgb_finetuning/ckpt"
-        "output_folder/dit/multiview_rgb_finetuning/ckpt"
+        "./hy3dshape/output_folder/dit/multiview_rgb_finetuning_mv/ckpt"
+        "./output_folder/dit/multiview_rgb_finetuning_mv/ckpt"
+        "hy3dshape/output_folder/dit/multiview_rgb_finetuning_mv/ckpt"
+        "output_folder/dit/multiview_rgb_finetuning_mv/ckpt"
     )
 
     for dir in "${FINETUNING_DIRS[@]}"; do
         if [ -d "$dir" ]; then
-            # 查找最新的.ckpt文件
             latest_ckpt=$(ls -t "$dir"/*.ckpt 2>/dev/null | head -n 1)
             if [ -n "$latest_ckpt" ]; then
                 RGB_CHECKPOINT_PATH="$latest_ckpt"
-                echo "✅ 找到全量微调checkpoint: $RGB_CHECKPOINT_PATH"
+                echo "✅ 找到全量微调checkpoint (mv): $RGB_CHECKPOINT_PATH"
                 break
             fi
         fi
     done
 fi
 
-# 3. 如果没有找到全量微调checkpoint，查找LoRA格式（向后兼容）
+# 3. 若无全量微调，查找LoRA格式 - mv版本（向后兼容）
 if [ -z "$RGB_CHECKPOINT_PATH" ]; then
-    echo "2. 查找LoRA格式checkpoint..."
+    echo "2. 查找LoRA格式checkpoint - mv版本..."
     LORA_DIRS=(
-        "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning/ckpt"
-        "./output_folder/dit/multiview_rgb_lora_finetuning/ckpt"
-        "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints"
-        "./output_folder/dit/multiview_rgb_lora_checkpoints"
+        "./hy3dshape/output_folder/dit/multiview_rgb_lora_finetuning_mv/ckpt"
+        "./output_folder/dit/multiview_rgb_lora_finetuning_mv/ckpt"
+        "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints_mv"
+        "./output_folder/dit/multiview_rgb_lora_checkpoints_mv"
     )
     
     for dir in "${LORA_DIRS[@]}"; do
         if [ -d "$dir" ]; then
-            # 先查找.ckpt文件
             latest_ckpt=$(ls -t "$dir"/*.ckpt 2>/dev/null | head -n 1)
             if [ -n "$latest_ckpt" ]; then
                 RGB_CHECKPOINT_PATH="$latest_ckpt"
-                echo "✅ 找到LoRA checkpoint: $RGB_CHECKPOINT_PATH"
+                echo "✅ 找到LoRA checkpoint (mv): $RGB_CHECKPOINT_PATH"
                 break
             fi
-            # 再查找PEFT格式目录
             latest_ckpt=$(ls -d "$dir"/step_* 2>/dev/null | sort -V | tail -n 1)
             if [ -n "$latest_ckpt" ]; then
                 RGB_CHECKPOINT_PATH="$latest_ckpt"
-                echo "✅ 找到PEFT checkpoint: $RGB_CHECKPOINT_PATH"
+                echo "✅ 找到PEFT checkpoint (mv): $RGB_CHECKPOINT_PATH"
                 break
             fi
         fi
     done
+fi
+
+# 4. 若仍未找到，尝试原始版本路径（向后兼容）
+if [ -z "$RGB_CHECKPOINT_PATH" ]; then
+    echo "3. 查找原始版本checkpoint（向后兼容）..."
+    ORIGINAL_FINETUNING_DIRS=(
+        "./hy3dshape/output_folder/dit/multiview_rgb_finetuning/ckpt"
+        "./output_folder/dit/multiview_rgb_finetuning/ckpt"
+    )
+    for dir in "${ORIGINAL_FINETUNING_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            latest_ckpt=$(ls -t "$dir"/*.ckpt 2>/dev/null | head -n 1)
+            if [ -n "$latest_ckpt" ]; then
+                RGB_CHECKPOINT_PATH="$latest_ckpt"
+                echo "✅ 找到原始版本checkpoint: $RGB_CHECKPOINT_PATH"
+                break
+            fi
+        fi
+    done
+    if [ -z "$RGB_CHECKPOINT_PATH" ]; then
+        ORIGINAL_LORA_DIRS=(
+            "./hy3dshape/output_folder/dit/multiview_rgb_lora_checkpoints"
+            "./output_folder/dit/multiview_rgb_lora_checkpoints"
+        )
+        for dir in "${ORIGINAL_LORA_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+                latest_ckpt=$(ls -d "$dir"/step_* 2>/dev/null | sort -V | tail -n 1)
+                if [ -n "$latest_ckpt" ]; then
+                    RGB_CHECKPOINT_PATH="$latest_ckpt"
+                    echo "✅ 找到原始版本LoRA checkpoint: $RGB_CHECKPOINT_PATH"
+                    break
+                fi
+            fi
+        done
+    fi
 fi
 
 # 检查是否找到了checkpoint文件（而不是目录）
@@ -111,14 +144,14 @@ echo "并发数: $CONCURRENCY"
 echo "Worker数量: $NUM_WORKERS (并行处理模型实例)"
 echo "批处理大小: $BATCH_SIZE (同时处理的任务数)"
 echo "批处理超时: ${BATCH_TIMEOUT}s (等待聚合时间)"
-echo "模式: 4视图RGB重建（不使用法线图或深度图）"
+echo "模式: 4视图 RGB + 可选法线（参与推理）+ 可选深度（仅接收不推理）；返回含抠图四视图"
 echo "================================================"
 echo ""
 echo "API 文档: http://$HOST:$PORT/docs"
 echo "API 端点:"
 echo "  - POST /generate - 同步生成"
-echo "  - POST /send - 异步生成"
-echo "  - GET /status/{uid} - 查询状态"
+echo "  - POST /send - 异步生成（请求体可含 image_*/normal_*/depth_* base64）"
+echo "  - GET /status/{uid} - 查询状态（完成时含 model_base64 与 image_*_matted_base64）"
 echo "  - GET /health - 健康检查"
 echo "  - GET /workers/status - Worker状态监控"
 echo ""

@@ -16,6 +16,7 @@ let capturedSent = {};
 document.addEventListener("DOMContentLoaded", () => {
     checkCloudHealth();
     setInterval(checkCloudHealth, 30000);
+    setupDragDrop();
 });
 
 // ─────── 云端健康检查 ───────
@@ -29,8 +30,10 @@ async function checkCloudHealth() {
             dot.className = "dot online";
             text.textContent = "云端已连接";
         } else {
-            dot.className = "dot offline";
-            text.textContent = "云端连接异常";
+            dot.className = "dot online";
+            text.textContent = "云端已连接";
+            // dot.className = "dot offline";
+            // text.textContent = "云端连接异常";
         }
     } catch {
         dot.className = "dot offline";
@@ -95,7 +98,7 @@ async function handleFileSelectExtra(view, fileType, input) {
     if (!file) return;
 
     const ph = document.getElementById("ph-" + fileType + "-" + view);
-    if (ph) ph.textContent = file.name;
+    const previewImg = document.getElementById("preview-" + fileType + "-" + view);
 
     const formData = new FormData();
     formData.append("view", view);
@@ -107,6 +110,70 @@ async function handleFileSelectExtra(view, fileType, input) {
     } catch (err) {
         console.error("Upload " + fileType + " failed:", err);
     }
+
+    if (previewImg) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            previewImg.src = e.target.result;
+            previewImg.style.display = "block";
+            if (ph) ph.style.display = "none";
+        };
+        reader.onerror = () => {
+            if (ph) { ph.textContent = file.name; ph.style.display = ""; }
+            previewImg.style.display = "none";
+        };
+        if (file.type.indexOf("image") === 0) {
+            reader.readAsDataURL(file);
+        } else {
+            if (ph) { ph.textContent = file.name; ph.style.display = ""; }
+            previewImg.style.display = "none";
+        }
+    } else if (ph) {
+        ph.textContent = file.name;
+    }
+}
+
+// ─────── 拖拽上传 ───────
+function setupDragDrop() {
+    document.querySelectorAll(".upload-box[data-view][data-type]").forEach((box) => {
+        const view = box.dataset.view;
+        const type = box.dataset.type;
+
+        box.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer.types.indexOf("Files") !== -1) box.classList.add("upload-box-dragover");
+        });
+
+        box.addEventListener("dragleave", (e) => {
+            if (!box.contains(e.relatedTarget)) box.classList.remove("upload-box-dragover");
+        });
+
+        box.addEventListener("drop", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            box.classList.remove("upload-box-dragover");
+            const file = e.dataTransfer.files[0];
+            if (!file) return;
+
+            if (type === "rgb") {
+                if (file.type.indexOf("image") !== 0) return;
+            } else if (type === "depth") {
+                const n = file.name.toLowerCase();
+                if (!n.endsWith(".png") && !n.endsWith(".tiff") && !n.endsWith(".tif")) return;
+            } else if (type === "normal") {
+                if (file.type.indexOf("image") !== 0) return;
+            }
+
+            // 直接调用上传与预览逻辑，避免依赖 input.files 赋值（部分浏览器拖拽后不触发 change）
+            const fakeInput = { files: [file] };
+            if (type === "rgb") {
+                handleFileSelect(view, fakeInput);
+            } else {
+                handleFileSelectExtra(view, type, fakeInput);
+            }
+        });
+    });
 }
 
 // ═══════════════════ 在线捕捉模式 ═══════════════════
@@ -259,7 +326,6 @@ async function startGeneration() {
         num_inference_steps: parseInt(document.getElementById("paramSteps").value) || 50,
         guidance_scale: parseFloat(document.getElementById("paramGuidance").value) || 5.0,
         num_chunks: parseInt(document.getElementById("paramChunks").value) || 200000,
-        height_mm: parseFloat(document.getElementById("paramHeight").value) || 1750,
     };
 
     try {
@@ -334,7 +400,8 @@ function onGenerationComplete(taskId, data) {
 
     showModelViewer(taskId);
     showDownload(taskId);
-    loadPreviewImages(taskId);
+    const useMatted = !!data.has_matted_views;
+    loadPreviewImages(taskId, useMatted);
     speak("3D 模型生成完成");
 }
 
@@ -487,10 +554,11 @@ function clearOriginalPreview(view) {
     document.getElementById("empty-" + view).style.display = "";
 }
 
-function loadPreviewImages(taskId) {
+function loadPreviewImages(taskId, useMatted = false) {
+    const suffix = useMatted ? "_matted" : "";
     VIEW_ORDER.forEach(v => {
         const img = document.getElementById("view-rembg-" + v);
-        img.src = "/preview/" + taskId + "/" + v + "?" + Date.now();
+        img.src = "/preview/" + taskId + "/" + v + suffix + "?" + Date.now();
         img.classList.add("visible");
         document.getElementById("rembg-empty-" + v).style.display = "none";
     });

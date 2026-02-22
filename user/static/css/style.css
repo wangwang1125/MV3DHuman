@@ -162,6 +162,10 @@ body {
     background: var(--bg);
 }
 .upload-box:hover { border-color: var(--primary); }
+.upload-box-dragover {
+    border-color: var(--primary) !important;
+    background: var(--primary-light) !important;
+}
 .upload-box img {
     width: 100%; height: 100%;
     object-fit: cover;
@@ -180,12 +184,53 @@ body {
     grid-template-columns: 1fr 1fr;
     gap: 8px;
 }
+.upload-grid-4 {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+}
 .upload-box-small {
     aspect-ratio: 1;
     min-height: 60px;
 }
 .upload-box-small .upload-placeholder {
     font-size: .75em;
+}
+
+/* 中栏 3D 预览下方：深度/法线/参数 */
+.below-preview {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+.below-preview .hint-section {
+    margin-top: 12px;
+    margin-bottom: 6px;
+}
+.below-preview .hint-section:first-of-type {
+    margin-top: 0;
+}
+.below-preview .params-section {
+    margin-top: 12px;
+}
+.below-preview .params-section .panel-title {
+    margin-top: 0;
+    margin-bottom: 8px;
+}
+.below-preview .param-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+.below-preview .param-item label {
+    font-size: .78em;
+}
+.below-preview .param-item input[type="number"] {
+    padding: 4px 6px;
+    font-size: .9em;
+}
+.below-preview .btn-generate {
+    margin-top: 14px;
+    width: 100%;
 }
 
 /* ─────── Capture controls ─────── */
@@ -530,5 +575,11 @@ body {
         transform: none;
         justify-content: center;
         margin-top: 8px;
+    }
+    .below-preview .upload-grid-4 {
+        grid-template-columns: 1fr 1fr;
+    }
+    .below-preview .param-grid {
+        grid-template-columns: 1fr 1fr;
     }
 }

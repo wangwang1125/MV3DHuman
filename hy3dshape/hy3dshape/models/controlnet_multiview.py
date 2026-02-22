@@ -111,13 +111,14 @@ class MultiViewDepthControlNet(nn.Module):
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, 0, 0.02)
     
-    def forward(self, depth_maps: torch.Tensor, enable_padding: bool = True) -> torch.Tensor:
+    def forward(self, depth_maps: torch.Tensor, enable_padding: bool = False) -> torch.Tensor:
         """
-        Forward pass of multi-view depth ControlNet with dynamic view adaptation
+        Forward pass of multi-view depth ControlNet with dynamic view adaptation.
+        不补充缺失视图（模型使用视图方向向量，无需用重复视图凑齐 num_views）。
         
         Args:
-            depth_maps: (B, num_views, 1, H, W) multi-view depth maps
-            enable_padding: Whether to enable view padding when num_views < self.num_views
+            depth_maps: (B, num_views, 1, H, W) multi-view depth maps，视图数可小于 self.num_views
+            enable_padding: 已废弃，保留仅为兼容；不再进行视图填充
             
         Returns:
             depth_features: (B, 1, out_channels) fused depth features as sequence
@@ -125,21 +126,11 @@ class MultiViewDepthControlNet(nn.Module):
         B, actual_num_views, C, H, W = depth_maps.shape
         assert C == self.in_channels, f"Expected {self.in_channels} channels, got {C}"
         
-        # Handle variable number of views
-        if actual_num_views != self.num_views:
-            if actual_num_views > self.num_views:
-                # Truncate to expected number of views
-                depth_maps = depth_maps[:, :self.num_views, :, :, :]
-                actual_num_views = self.num_views
-                print(f"Warning: Truncating {actual_num_views} views to {self.num_views}")
-            elif enable_padding and actual_num_views < self.num_views:
-                # Pad with repeated last view
-                depth_maps = self._pad_views(depth_maps, self.num_views)
-                actual_num_views = self.num_views
-                print(f"Info: Padded {depth_maps.shape[1]} views to {self.num_views} using repetition")
-            else:
-                # Use dynamic adaptation without padding
-                print(f"Info: Using dynamic adaptation for {actual_num_views} views (expected {self.num_views})")
+        # 视图数多于预期时截断；少于时不填充，直接使用实际视图数（方向向量由 actual_num_views 决定）
+        if actual_num_views > self.num_views:
+            depth_maps = depth_maps[:, :self.num_views, :, :, :]
+            actual_num_views = self.num_views
+            print(f"Warning: Truncating views to {self.num_views}")
         
         # Reshape for batch processing: (B*actual_num_views, C, H, W)
         depth_flat = depth_maps.view(B * actual_num_views, C, H, W)
@@ -208,34 +199,6 @@ class MultiViewDepthControlNet(nn.Module):
         depth_tokens = self.token_norm(depth_tokens + queries)  # (B, 16, out_channels)
         
         return depth_tokens  # (B, 16, out_channels)
-    
-    def _pad_views(self, depth_maps: torch.Tensor, target_views: int) -> torch.Tensor:
-        """
-        Pad depth maps to target number of views using repetition strategy
-        
-        Args:
-            depth_maps: (B, current_views, C, H, W)
-            target_views: Target number of views
-            
-        Returns:
-            padded_depth_maps: (B, target_views, C, H, W)
-        """
-        B, current_views, C, H, W = depth_maps.shape
-        
-        if current_views >= target_views:
-            return depth_maps[:, :target_views, :, :, :]
-        
-        # Calculate how many views to pad
-        views_to_pad = target_views - current_views
-        
-        # Repeat the last view to fill the gap
-        last_view = depth_maps[:, -1:, :, :, :]  # (B, 1, C, H, W)
-        repeated_views = last_view.repeat(1, views_to_pad, 1, 1, 1)  # (B, views_to_pad, C, H, W)
-        
-        # Concatenate original views with repeated views
-        padded_depth_maps = torch.cat([depth_maps, repeated_views], dim=1)  # (B, target_views, C, H, W)
-        
-        return padded_depth_maps
 
 
 class MultiViewAttentionFusion(nn.Module):

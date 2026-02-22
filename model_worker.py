@@ -55,6 +55,45 @@ def load_image_from_base64(image):
     return Image.open(BytesIO(base64.b64decode(image)))
 
 
+def build_normal_data_from_params(params, target_size=518):
+    """
+    从请求 params 中可选的 normal_front/right/back/left (base64) 构建法线张量。
+    深度图在 params 中仅接收不参与推理，此处不处理。
+    
+    Returns:
+        dict with 'normal' (1, 4, 3, H, W), 'normal_mask' (1, 4, 1, H, W), or None if no normals provided.
+    """
+    view_order = ['front', 'right', 'back', 'left']
+    keys = [f'normal_{v}' for v in view_order]
+    if not any(params.get(k) for k in keys):
+        return None
+    import numpy as np
+    normal_tensors = []
+    mask_tensors = []
+    for key in keys:
+        b64 = params.get(key)
+        if b64:
+            try:
+                img = load_image_from_base64(b64).convert('RGB')
+                if img.size[0] != target_size or img.size[1] != target_size:
+                    img = img.resize((target_size, target_size), Image.BILINEAR)
+                arr = np.array(img).astype(np.float32) / 255.0
+                t = torch.FloatTensor(arr).permute(2, 0, 1)
+                mask = (t.sum(dim=0) > 0.01).float().unsqueeze(0)
+                normal_tensors.append(t)
+                mask_tensors.append(mask)
+            except Exception as e:
+                logger.warning(f"Failed to load normal from {key}: {e}")
+                normal_tensors.append(torch.zeros(3, target_size, target_size))
+                mask_tensors.append(torch.zeros(1, target_size, target_size))
+        else:
+            normal_tensors.append(torch.zeros(3, target_size, target_size))
+            mask_tensors.append(torch.zeros(1, target_size, target_size))
+    multiview_normal = torch.stack(normal_tensors, dim=0).unsqueeze(0)
+    multiview_mask = torch.stack(mask_tensors, dim=0).unsqueeze(0)
+    return {'normal': multiview_normal, 'normal_mask': multiview_mask}
+
+
 class ModelWorker:
     """
     Worker class for handling 3D model generation tasks.
@@ -438,7 +477,7 @@ class ModelWorker:
                 if self.status_callback:
                     await self.status_callback(task.uid, 'processing')
                 
-                # Multi-view mode
+                # Multi-view mode（RGB 必选；法线可选参与推理；深度仅接收不参与推理）
                 if 'image_front' in params:
                     image = {}
                     view_names = ['image_front', 'image_right', 'image_back', 'image_left']
@@ -455,7 +494,8 @@ class ModelWorker:
                     
                     if not image:
                         raise ValueError("No multi-view images provided")
-                    return task.uid, image, params
+                    normal_data = build_normal_data_from_params(params)
+                    return task.uid, image, params, normal_data
                 
                 # Single-view mode
                 elif 'image' in params:
@@ -465,7 +505,7 @@ class ModelWorker:
                     if params.get("remove_background", True) or image.mode == "RGB":
                         loop = asyncio.get_event_loop()
                         image = await loop.run_in_executor(None, self.rembg, image)
-                    return task.uid, image, params
+                    return task.uid, image, params, None
                 
                 else:
                     raise ValueError("No input image provided")
@@ -491,19 +531,48 @@ class ModelWorker:
                 logger.warning("[Batch] No valid tasks after preprocessing")
                 return
             
-            # Stage 2: Batch GPU inference
-            logger.info(f"[Worker {self.worker_id}] [Batch] Starting GPU inference for {len(valid_tasks)} tasks (using CUDA stream: {self.cuda_stream is not None})")
+            # 保存抠完图的四视图，供 status 接口返回
+            for task, result in valid_tasks:
+                uid, image, params, normal_data = result[0], result[1], result[2], result[3] if len(result) > 3 else None
+                if isinstance(image, dict):
+                    for view in ['front', 'right', 'back', 'left']:
+                        if view in image:
+                            path = os.path.join(self.save_dir, f'{uid}_matted_{view}.png')
+                            try:
+                                image[view].save(path)
+                            except Exception as e:
+                                logger.warning(f"Failed to save matted view {view} for {uid}: {e}")
             
             # Build batch inputs
             batch_images = []
             batch_params_list = []
-            
-            for task, (uid, image, params) in valid_tasks:
+            normal_data_list = []
+            for task, result in valid_tasks:
+                uid, image, params = result[0], result[1], result[2]
+                normal_data = result[3] if len(result) > 3 else None
                 batch_images.append(image)
                 batch_params_list.append(params)
+                normal_data_list.append(normal_data)
             
             # Use first task's parameters as batch parameters
             ref_params = batch_params_list[0]
+            
+            # 批法线：若任一样本有法线则传入 pipeline（缺失的用零填充）
+            batch_normal = None
+            batch_normal_mask = None
+            if any(nd is not None for nd in normal_data_list):
+                target_size = 518
+                normals = []
+                masks = []
+                for nd in normal_data_list:
+                    if nd is not None:
+                        normals.append(nd['normal'])
+                        masks.append(nd['normal_mask'])
+                    else:
+                        normals.append(torch.zeros(1, 4, 3, target_size, target_size))
+                        masks.append(torch.zeros(1, 4, 1, target_size, target_size))
+                batch_normal = torch.cat(normals, dim=0)
+                batch_normal_mask = torch.cat(masks, dim=0)
             
             # Prepare batch pipeline parameters
             # Use 'trimesh' output_type to get trimesh.Trimesh objects directly
@@ -516,6 +585,9 @@ class ModelWorker:
                 'num_chunks': ref_params.get('num_chunks', 200000),  # Match gradio default
                 'output_type': 'trimesh'  # Changed from 'mesh' to 'trimesh' to get Trimesh objects
             }
+            if batch_normal is not None:
+                pipeline_params['normal'] = batch_normal
+                pipeline_params['normal_mask'] = batch_normal_mask
             
             # Set seeds for each task (can be different)
             generators = []

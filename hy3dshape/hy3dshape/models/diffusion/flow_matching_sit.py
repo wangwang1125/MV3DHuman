@@ -602,11 +602,8 @@ class Diffuser(pl.LightningModule):
                     if len(depth.shape) == 5:
                         depth_features = self.controlnet(depth)  # (B, 1, hidden_dim)
                     else:
-                        # Fallback: if depth is (B, 1, H, W), treat as single view
-                        print(f"[WARNING] Expected multi-view depth (B, {self.num_views}, 1, H, W), got {depth.shape}")
+                        # 单视图 depth：(B, 1, H, W) -> (B, 1, 1, H, W)，不重复凑齐多视图（模型用方向向量）
                         depth = depth.unsqueeze(1)  # (B, 1, 1, H, W)
-                        # Replicate to match expected number of views
-                        depth = depth.repeat(1, self.num_views, 1, 1, 1)  # (B, num_views, 1, H, W)
                         depth_features = self.controlnet(depth)  # (B, 1, hidden_dim)
                 else:
                     # Single-view depth processing: expect (B, 1, H, W)
