@@ -41,13 +41,46 @@ from .utils import worker_init_fn, pytorch_worker_seed, make_seed
 from .dit_asl import ResampledShards, read_npz, read_json, padding, viz_pc
 
 
+# 与 MVImageProcessorV2 / view_order 一致，用于 collate 时统一视图子集
+_COLLATE_VIEW_ORDER = ['front', 'left', 'back', 'right']
+
+
 def multiview_collate_fn(batch):
     """
-    自定义 collate_fn，用于处理多视图数据
-    将多个样本的 image_dict 和 normal_dict 合并为 list of dicts
+    自定义 collate_fn，用于处理多视图数据。
+    将多个样本的 image_dict 和 normal_dict 合并为 list of dicts。
+    当启用 sample_num_views 时：先为本 batch 确定目标视图数 k（在 1～4 中随机），
+    再将该 batch 内所有样本统一为 k 个视图（多于 k 的随机裁到 k；若 batch 中最小视图数 < k，则 k 取该最小值，避免填充）。
+    视角位置编码仍使用原始 view 索引（如 0=front, 2=back），不会变成“左视图”。
     """
     if len(batch) == 0:
         return {}
+    
+    # 先为本 batch 确定目标视图数 k（1～4 随机），再与 batch 内最小视图数取 min，保证不需填充
+    num_views_per_sample = [len(s.get('image') or {}) for s in batch]
+    min_views_in_batch = min(num_views_per_sample)
+    if min_views_in_batch <= 0:
+        raise ValueError("batch 中存在无有效 image 的样本")
+    k = min(random.choice([1, 2, 3, 4]), min_views_in_batch)
+    
+    for sample in batch:
+        img_dict = sample.get('image') or {}
+        if len(img_dict) <= k:
+            continue
+        # 当前样本视图（保持插入顺序，与 depth 维度对应）
+        original_views = [v for v in _COLLATE_VIEW_ORDER if v in img_dict]
+        if len(original_views) <= k:
+            continue
+        # 随机保留 k 个视图，并保持 view_order 顺序
+        chosen = sorted(random.sample(range(len(original_views)), k))
+        views_to_keep = [original_views[i] for i in chosen]
+        sample['image'] = {v: img_dict[v] for v in views_to_keep}
+        # 同步截取 depth：depth 的 dim0 与 original_views 顺序一致
+        if 'depth' in sample and isinstance(sample['depth'], torch.Tensor):
+            indices_to_keep = [original_views.index(v) for v in views_to_keep]
+            sample['depth'] = sample['depth'][indices_to_keep]
+        if 'normal' in sample and isinstance(sample['normal'], dict):
+            sample['normal'] = {v: sample['normal'][v] for v in views_to_keep if v in sample['normal']}
     
     # 收集所有字段
     collated = {}
@@ -92,7 +125,8 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         load_normal: bool = False,
         multiview_indices: List[int] = [0, 6, 12, 18],  # 前后左右四个视图的索引 (0°, 90°, 180°, 270°)
         depth_fusion_strategy: str = "multiview",  # "multiview" (keep all views), "average", "max", "weighted"
-        normal_fusion_strategy: str = "multiview"  # For normal maps, keep all views for DinoImageEncoderMV
+        normal_fusion_strategy: str = "multiview",  # For normal maps, keep all views for DinoImageEncoderMV
+        sample_num_views: Optional[Union[str, List[int]]] = None,  # None/4: 固定4视图; "random" 或 [1,2,3,4]: 每样本随机1~4视图
     ):
         """
         Multi-view dataset for loading front/back/left/right views with depth maps and normal maps
@@ -101,6 +135,8 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
             multiview_indices: List of camera view indices to use. Default [0, 6, 12, 18] 
                               corresponds to front, right, back, left views (every 90 degrees)
                               Total 24 views means 360/24 = 15 degrees per view
+            sample_num_views: If None or 4, use all 4 views. If "random" or [1,2,3,4], each sample
+                              randomly uses 1, 2, 3, or 4 views (view position encoding is preserved).
         """
         super().__init__()
         if isinstance(data_list, str) and data_list.endswith('.json'):
@@ -127,6 +163,7 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         self.multiview_indices = multiview_indices
         self.depth_fusion_strategy = depth_fusion_strategy
         self.normal_fusion_strategy = normal_fusion_strategy
+        self.sample_num_views = sample_num_views  # None/4: 全4视图; "random" 或 [1,2,3,4]: 随机1~4视图
         
         # 映射视图索引到视图名称（与 MVImageProcessorV2 的 view2idx 一致）
         # 假设 multiview_indices 的顺序是 [front_idx, left_idx, back_idx, right_idx]
@@ -150,7 +187,26 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         rank_zero_info(f'Load depth maps: {self.load_depth}')
         rank_zero_info(f'Load normal maps: {self.load_normal}')
         rank_zero_info(f'Multi-view indices: {self.multiview_indices} (total {len(self.multiview_indices)} views)')
+        rank_zero_info(f'Sample num_views: {self.sample_num_views} (random 1~4 views when "random" or [1,2,3,4])')
         rank_zero_info(f'*' * 50)
+
+    def _sample_view_subset(self) -> List[str]:
+        """每个样本随机选取 1/2/3/4 个视图（保持 view_order 顺序，便于位置编码一致）。"""
+        if self.sample_num_views is None:
+            return list(self.view_order)
+        if self.sample_num_views == 4 or (isinstance(self.sample_num_views, int) and self.sample_num_views >= 4):
+            return list(self.view_order)
+        # "random" 或 [1,2,3,4]：随机选 k 个视图，k 在 1~4 之间
+        if self.sample_num_views == "random":
+            k = self.rng.randint(1, len(self.view_order))
+        elif isinstance(self.sample_num_views, (list, tuple)) and len(self.sample_num_views) > 0:
+            k = self.rng.choice(self.sample_num_views)
+            k = max(1, min(k, len(self.view_order)))
+        else:
+            return list(self.view_order)
+        # 在 view_order 中随机选 k 个，并保持原有顺序（保证 view_idxs 与 MVImageProcessorV2 一致）
+        indices = sorted(self.rng.sample(range(len(self.view_order)), k))
+        return [self.view_order[i] for i in indices]
 
     def load_surface_sdf_points(self, rng, random_surface, sharpedge_surface):
         """Same as original implementation"""
@@ -458,27 +514,28 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         random_surface = sample.get("random_surface", 0)
         sharpedge_surface = sample.get("sharpedge_surface", 0)
         
-        # 直接返回 image_dict，让 MVImageProcessorV2 处理
-        # 不再进行预处理（padding, transform等），这些由 MVImageProcessorV2 统一处理
+        # 随机选取本样本使用的视图子集（1/2/3/4 视图），保持 view_order 顺序以匹配位置编码
+        selected_views = self._sample_view_subset()
+        image_dict_full = sample['image']
+        image_dict = {v: image_dict_full[v] for v in selected_views if v in image_dict_full}
+        
         surface, geo_points = self.load_surface_sdf_points(rng, random_surface, sharpedge_surface)
         
         result_sample = {
             "surface": surface,
             "geo_points": geo_points,
-            "image": sample['image'],  # 返回 image_dict，让 pipeline 的 prepare_image 通过 MVImageProcessorV2 处理
+            "image": image_dict,  # 仅包含 selected_views，顺序已保持
         }
         
-        # Load depth maps if enabled - depth 仍然返回 tensor（因为 ControlNet 需要）
-        # depth 不经过 MVImageProcessorV2，所以需要预处理成 tensor
+        # Load depth maps if enabled - 仅加载选中视图的 depth
         if self.load_depth and "depth" in sample:
-            # depth_dict 需要按 view_order 顺序提取路径，确保顺序一致
-            depth_paths = [sample['depth'][view_name] for view_name in self.view_order if view_name in sample['depth']]
+            depth_paths = [sample['depth'][view_name] for view_name in selected_views if view_name in sample.get('depth', {})]
             depth_input = self.load_multiview_depth_maps(depth_paths)
-            result_sample["depth"] = depth_input  # Shape: (num_views, 1, H, W) - multi-view depths
+            result_sample["depth"] = depth_input  # Shape: (num_views, 1, H, W)
         
-        # Load normal maps if enabled - normal 也返回 normal_dict
+        # Load normal maps if enabled - 仅返回选中视图的 normal_dict
         if self.load_normal and "normal" in sample:
-            result_sample["normal"] = sample['normal']  # 返回 normal_dict，让 MVImageProcessorV2 处理
+            result_sample["normal"] = {v: sample['normal'][v] for v in selected_views if v in sample.get('normal', {})}
         
         return result_sample
 
@@ -522,7 +579,8 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         load_normal: bool = False,
         multiview_indices: List[int] = [0, 6, 12, 18],  # 前后左右四个视图
         depth_fusion_strategy: str = "multiview",  # 深度融合策略
-        normal_fusion_strategy: str = "multiview"  # 法线图融合策略
+        normal_fusion_strategy: str = "multiview",  # 法线图融合策略
+        sample_num_views: Optional[Union[str, List[int]]] = None,  # None/4: 固定4视图; "random" 或 [1,2,3,4]: 每样本随机1~4视图
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -557,6 +615,7 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         self.multiview_indices = multiview_indices
         self.depth_fusion_strategy = depth_fusion_strategy
         self.normal_fusion_strategy = normal_fusion_strategy
+        self.sample_num_views = sample_num_views
         
     def train_dataloader(self):
         asl_params = {
@@ -573,7 +632,8 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "load_normal": self.load_normal,
             "multiview_indices": self.multiview_indices,
             "depth_fusion_strategy": self.depth_fusion_strategy,
-            "normal_fusion_strategy": self.normal_fusion_strategy
+            "normal_fusion_strategy": self.normal_fusion_strategy,
+            "sample_num_views": self.sample_num_views,
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
@@ -601,7 +661,8 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "load_normal": self.load_normal,
             "multiview_indices": self.multiview_indices,
             "depth_fusion_strategy": self.depth_fusion_strategy,
-            "normal_fusion_strategy": self.normal_fusion_strategy
+            "normal_fusion_strategy": self.normal_fusion_strategy,
+            "sample_num_views": self.sample_num_views,
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
