@@ -11,6 +11,11 @@ let ws = null;
 let currentMode = "import";
 let currentTaskId = null;
 let capturedSent = {};
+// 生成等待计时（参考 gradio 的 time_meta 展示已等待时间）
+let generationStartTime = 0;
+let progressElapsedTimer = null;
+let hasSeenProcessing = false;  // 一旦见过「推理中」就不再切回「排队中」，避免闪烁
+let currentProgressStatus = "submitting";
 
 // ─────── 初始化 ───────
 document.addEventListener("DOMContentLoaded", () => {
@@ -30,10 +35,8 @@ async function checkCloudHealth() {
             dot.className = "dot online";
             text.textContent = "云端已连接";
         } else {
-            dot.className = "dot online";
-            text.textContent = "云端已连接";
-            // dot.className = "dot offline";
-            // text.textContent = "云端连接异常";
+            dot.className = "dot offline";
+            text.textContent = "云端连接异常";
         }
     } catch {
         dot.className = "dot offline";
@@ -73,6 +76,7 @@ async function handleFileSelect(view, input) {
         img.src = e.target.result;
         img.style.display = "block";
         document.getElementById("ph-" + view).style.display = "none";
+        if (img.parentElement) img.parentElement.classList.add("has-preview");
 
         setOriginalPreview(view, e.target.result);
     };
@@ -91,6 +95,34 @@ async function handleFileSelect(view, input) {
 
 function triggerUploadExtra(view, fileType) {
     document.getElementById("file-" + fileType + "-" + view).click();
+}
+
+async function clearUpload(view, fileType) {
+    const formData = new FormData();
+    formData.append("view", view);
+    formData.append("file_type", fileType);
+    try {
+        await fetch("/upload/clear_one", { method: "POST", body: formData });
+    } catch (err) {
+        console.error("Clear upload failed:", err);
+        return;
+    }
+    if (fileType === "rgb") {
+        const img = document.getElementById("preview-upload-" + view);
+        const ph = document.getElementById("ph-" + view);
+        if (img) { img.src = ""; img.style.display = "none"; if (img.parentElement) img.parentElement.classList.remove("has-preview"); }
+        if (ph) ph.style.display = "";
+        clearOriginalPreview(view);
+        const fileInput = document.getElementById("file-" + view);
+        if (fileInput) fileInput.value = "";
+    } else {
+        const previewImg = document.getElementById("preview-" + fileType + "-" + view);
+        const ph = document.getElementById("ph-" + fileType + "-" + view);
+        if (previewImg) { previewImg.src = ""; previewImg.style.display = "none"; if (previewImg.parentElement) previewImg.parentElement.classList.remove("has-preview"); }
+        if (ph) { ph.textContent = "可选"; ph.style.display = ""; }
+        const fileInput = document.getElementById("file-" + fileType + "-" + view);
+        if (fileInput) fileInput.value = "";
+    }
 }
 
 async function handleFileSelectExtra(view, fileType, input) {
@@ -117,6 +149,7 @@ async function handleFileSelectExtra(view, fileType, input) {
             previewImg.src = e.target.result;
             previewImg.style.display = "block";
             if (ph) ph.style.display = "none";
+            if (previewImg.parentElement) previewImg.parentElement.classList.add("has-preview");
         };
         reader.onerror = () => {
             if (ph) { ph.textContent = file.name; ph.style.display = ""; }
@@ -312,6 +345,42 @@ function speak(text) {
 
 // ═══════════════════ 生成 3D 模型 ═══════════════════
 
+/** 从 data URL 截取 base64 字符串，无效则返回 null */
+function dataUrlToBase64(dataUrl) {
+    if (!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+    const i = dataUrl.indexOf(",");
+    return i >= 0 ? dataUrl.slice(i + 1) : null;
+}
+
+/** 从当前页面的预览图收集 base64（含 RGB / normal / depth），重启后仍可用来提交 */
+function collectPreviewBase64() {
+    const images_base64 = {};
+    const normals_base64 = {};
+    const depths_base64 = {};
+    VIEW_ORDER.forEach((view) => {
+        const imgEl = document.getElementById("preview-upload-" + view);
+        if (imgEl && imgEl.src) {
+            const b64 = dataUrlToBase64(imgEl.src);
+            if (b64) images_base64[view] = b64;
+        }
+        const normalEl = document.getElementById("preview-normal-" + view);
+        if (normalEl && normalEl.src) {
+            const b64 = dataUrlToBase64(normalEl.src);
+            if (b64) normals_base64[view] = b64;
+        }
+        const depthEl = document.getElementById("preview-depth-" + view);
+        if (depthEl && depthEl.src) {
+            const b64 = dataUrlToBase64(depthEl.src);
+            if (b64) depths_base64[view] = b64;
+        }
+    });
+    return {
+        images_base64: Object.keys(images_base64).length ? images_base64 : undefined,
+        normals_base64: Object.keys(normals_base64).length ? normals_base64 : undefined,
+        depths_base64: Object.keys(depths_base64).length ? depths_base64 : undefined,
+    };
+}
+
 async function startGeneration() {
     const btn = document.getElementById("btnGenerate");
     btn.disabled = true;
@@ -325,14 +394,23 @@ async function startGeneration() {
         octree_resolution: parseInt(document.getElementById("paramResolution").value) || 256,
         num_inference_steps: parseInt(document.getElementById("paramSteps").value) || 50,
         guidance_scale: parseFloat(document.getElementById("paramGuidance").value) || 5.0,
-        num_chunks: parseInt(document.getElementById("paramChunks").value) || 200000,
+        num_chunks: parseInt(document.getElementById("paramChunks").value) || 8000,
     };
+
+    const mode = currentMode === "import" ? "upload" : "capture";
+    const payload = { mode, params };
+    if (mode === "upload") {
+        const preview = collectPreviewBase64();
+        if (preview.images_base64) payload.images_base64 = preview.images_base64;
+        if (preview.normals_base64) payload.normals_base64 = preview.normals_base64;
+        if (preview.depths_base64) payload.depths_base64 = preview.depths_base64;
+    }
 
     try {
         const resp = await fetch("/generate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode: currentMode === "import" ? "upload" : "capture", params }),
+            body: JSON.stringify(payload),
         });
         const data = await resp.json();
 
@@ -345,7 +423,12 @@ async function startGeneration() {
         }
 
         currentTaskId = data.task_id;
-        showProgress("任务已提交，等待处理...");
+        generationStartTime = Date.now();
+        hasSeenProcessing = false;
+        currentProgressStatus = "pending";
+        showProgress(getProgressLabelWithElapsed());
+        if (progressElapsedTimer) clearInterval(progressElapsedTimer);
+        progressElapsedTimer = setInterval(updateProgressElapsed, 1000);
 
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             connectWebSocket();
@@ -364,21 +447,30 @@ function startPolling(taskId) {
     const poll = async () => {
         try {
             const resp = await fetch("/task/" + taskId);
-            const data = await resp.json();
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                onGenerationError(data.error || data.message || "请求失败");
+                return;
+            }
+            if (data.error) {
+                onGenerationError(data.error);
+                return;
+            }
             if (data.status === "completed") {
                 onGenerationComplete(taskId, data);
                 return;
-            } else if (data.status === "error") {
+            }
+            if (data.status === "error") {
                 onGenerationError(data.message || "未知错误");
                 return;
             }
             updateProgressText(data.status);
-            setTimeout(poll, 3000);
+            setTimeout(poll, 2000);
         } catch {
             setTimeout(poll, 5000);
         }
     };
-    setTimeout(poll, 3000);
+    setTimeout(poll, 2000);
 }
 
 function onTaskStatus(msg) {
@@ -413,7 +505,33 @@ function onGenerationError(message) {
     alert("生成失败: " + message);
 }
 
-// ─────── Progress UI ───────
+// ─────── Progress UI（参考 gradio 的 time_meta，显示已等待时间）───────
+const PROGRESS_LABELS = {
+    submitting: "提交中...",
+    pending: "排队中...",
+    processing: "GPU 推理中...",
+};
+// 排队超过此秒数仍显示「推理中」，避免长时间只显示排队
+const PENDING_AS_PROCESSING_AFTER_SEC = 10;
+function getProgressLabel(status) {
+    const sec = getElapsedSeconds();
+    if (status === "pending" && sec >= PENDING_AS_PROCESSING_AFTER_SEC)
+        return PROGRESS_LABELS.processing;
+    return PROGRESS_LABELS[status] || status;
+}
+function getElapsedSeconds() {
+    return generationStartTime ? Math.floor((Date.now() - generationStartTime) / 1000) : 0;
+}
+function getProgressLabelWithElapsed() {
+    const label = getProgressLabel(currentProgressStatus);
+    const sec = getElapsedSeconds();
+    return sec > 0 ? label + " 已等待 " + sec + " 秒" : label;
+}
+function updateProgressElapsed() {
+    const el = document.getElementById("generationProgress");
+    if (!el || el.style.display !== "flex") return;
+    document.getElementById("progressText").textContent = getProgressLabelWithElapsed();
+}
 function showProgress(text) {
     const el = document.getElementById("generationProgress");
     el.style.display = "flex";
@@ -422,121 +540,73 @@ function showProgress(text) {
 }
 
 function hideProgress() {
+    if (progressElapsedTimer) {
+        clearInterval(progressElapsedTimer);
+        progressElapsedTimer = null;
+    }
     document.getElementById("generationProgress").style.display = "none";
 }
 
 function updateProgressText(status) {
-    const labels = { pending: "排队中...", processing: "GPU 推理中...", submitting: "提交中..." };
-    document.getElementById("progressText").textContent = labels[status] || status;
+    if (status === "processing") hasSeenProcessing = true;
+    // 一旦见过「推理中」就不再显示「排队中」，避免排队/推理来回闪
+    const displayStatus = status === "pending" && hasSeenProcessing ? "processing" : status;
+    currentProgressStatus = displayStatus;
+    document.getElementById("progressText").textContent = getProgressLabelWithElapsed();
 }
 
-// ─────── 3D Model Viewer (Three.js + OBJLoader) ───────
-let threeScene = null, threeCamera = null, threeRenderer = null, threeControls = null;
-let threeAnimId = null;
+// ─────── 3D Model Viewer (Google model-viewer) ───────
 
-function initThreeViewer() {
-    const canvas = document.getElementById("modelCanvas");
-    const wrap = document.getElementById("modelViewerWrap");
-    const w = wrap.clientWidth;
-    const h = wrap.clientHeight || 500;
+function initModelViewerEvents() {
+    const viewer = document.getElementById("modelViewer");
+    if (!viewer) return;
 
-    threeScene = new THREE.Scene();
-    threeScene.background = new THREE.Color(0xf5f5f5);
-
-    threeCamera = new THREE.PerspectiveCamera(45, w / h, 0.1, 10000);
-    threeCamera.position.set(0, 800, 2000);
-
-    threeRenderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
-    threeRenderer.setSize(w, h);
-    threeRenderer.setPixelRatio(window.devicePixelRatio);
-
-    threeControls = new THREE.OrbitControls(threeCamera, canvas);
-    threeControls.enableDamping = true;
-    threeControls.dampingFactor = 0.08;
-    threeControls.target.set(0, 800, 0);
-
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    threeScene.add(ambientLight);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(500, 1500, 1000);
-    threeScene.add(dirLight);
-    const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
-    dirLight2.position.set(-500, 500, -1000);
-    threeScene.add(dirLight2);
-
-    const gridHelper = new THREE.GridHelper(4000, 40, 0xcccccc, 0xe0e0e0);
-    threeScene.add(gridHelper);
-
-    function animate() {
-        threeAnimId = requestAnimationFrame(animate);
-        threeControls.update();
-        threeRenderer.render(threeScene, threeCamera);
-    }
-    animate();
-
-    window.addEventListener("resize", () => {
-        const nw = wrap.clientWidth;
-        const nh = wrap.clientHeight || 500;
-        threeCamera.aspect = nw / nh;
-        threeCamera.updateProjectionMatrix();
-        threeRenderer.setSize(nw, nh);
+    viewer.addEventListener("load", () => {
+        if (!viewer.model || !viewer.model.materials) return;
+        viewer.model.materials.forEach((mat) => {
+            const pbr = mat.pbrMetallicRoughness;
+            pbr.setBaseColorFactor([0.18, 0.18, 0.19, 1.0]);
+            pbr.setMetallicFactor(0.3);
+            pbr.setRoughnessFactor(0.35);
+        });
     });
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+    initModelViewerEvents();
+});
 
 function showModelViewer(taskId) {
     document.getElementById("modelPlaceholder").style.display = "none";
-    const canvas = document.getElementById("modelCanvas");
-    canvas.style.display = "block";
+    const viewer = document.getElementById("modelViewer");
 
-    if (!threeScene) initThreeViewer();
+    if (!customElements.get("model-viewer")) {
+        document.getElementById("modelPlaceholder").style.display = "flex";
+        document.getElementById("modelPlaceholder").innerHTML =
+            "<p>3D 预览组件加载失败（网络超时），请刷新页面后重试。</p><p class='small'>您仍可下载下方模型文件。</p>";
+        return;
+    }
 
-    // Remove previous model objects
-    const toRemove = [];
-    threeScene.traverse(child => {
-        if (child.isMesh) toRemove.push(child);
-    });
-    toRemove.forEach(obj => {
-        obj.geometry.dispose();
-        if (obj.material) {
-            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
-            else obj.material.dispose();
-        }
-        threeScene.remove(obj);
-    });
+    const glbUrl = "/output/" + taskId + ".glb?" + Date.now();
+    viewer.src = glbUrl;
+    viewer.style.display = "block";
+}
 
-    const loader = new THREE.OBJLoader();
-    const url = "/output/" + taskId + ".obj?" + Date.now();
-    loader.load(url, (obj) => {
-        const material = new THREE.MeshStandardMaterial({
-            color: 0xb0b0b0,
-            metalness: 0.1,
-            roughness: 0.6,
-            side: THREE.DoubleSide,
-        });
-        obj.traverse(child => {
-            if (child.isMesh) {
-                child.material = material;
-            }
-        });
-        threeScene.add(obj);
+let currentDownloadTaskId = null;
 
-        // Auto-fit camera
-        const box = new THREE.Box3().setFromObject(obj);
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        threeCamera.position.set(center.x, center.y + maxDim * 0.3, center.z + maxDim * 1.5);
-        threeControls.target.copy(center);
-        threeControls.update();
-    });
+function updateDownloadLink() {
+    if (!currentDownloadTaskId) return;
+    const format = document.getElementById("downloadFormat").value || "glb";
+    const btn = document.getElementById("btnDownload");
+    btn.href = "/download/" + currentDownloadTaskId + "?format=" + format;
+    btn.download = currentDownloadTaskId + "." + format;
 }
 
 function showDownload(taskId) {
+    currentDownloadTaskId = taskId;
     const section = document.getElementById("downloadSection");
     section.style.display = "block";
-    const btn = document.getElementById("btnDownload");
-    btn.href = "/download/" + taskId;
-    btn.download = taskId + ".obj";
+    updateDownloadLink();
 }
 
 // ─────── Preview images ───────

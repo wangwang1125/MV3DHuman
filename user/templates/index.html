@@ -5,10 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MH3D 人体三维重建系统</title>
     <link rel="stylesheet" href="/static/css/style.css">
-    <!-- Three.js for OBJ 3D preview -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/OBJLoader.js"></script>
+    <!-- Google model-viewer: 与 gradio_app 一致的高质量 3D 可视化 -->
+    <script src="https://cdn.jsdelivr.net/npm/@google/model-viewer@3.1.1/dist/model-viewer.min.js" type="module"></script>
 </head>
 <body>
 
@@ -42,6 +40,7 @@
                 <div class="upload-item" id="upload-front">
                     <label>正面 (Front)</label>
                     <div class="upload-box" data-view="front" data-type="rgb" onclick="triggerUpload('front')" title="点击或拖拽图片到此处">
+                        <button type="button" class="upload-delete" data-view="front" data-type="rgb" onclick="clearUpload('front','rgb'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-upload-front" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-front">点击或拖拽上传</span>
                     </div>
@@ -51,6 +50,7 @@
                 <div class="upload-item" id="upload-right">
                     <label>右侧 (Right)</label>
                     <div class="upload-box" data-view="right" data-type="rgb" onclick="triggerUpload('right')" title="点击或拖拽图片到此处">
+                        <button type="button" class="upload-delete" data-view="right" data-type="rgb" onclick="clearUpload('right','rgb'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-upload-right" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-right">点击或拖拽上传</span>
                     </div>
@@ -60,6 +60,7 @@
                 <div class="upload-item" id="upload-back">
                     <label>背面 (Back)</label>
                     <div class="upload-box" data-view="back" data-type="rgb" onclick="triggerUpload('back')" title="点击或拖拽图片到此处">
+                        <button type="button" class="upload-delete" data-view="back" data-type="rgb" onclick="clearUpload('back','rgb'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-upload-back" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-back">点击或拖拽上传</span>
                     </div>
@@ -69,6 +70,7 @@
                 <div class="upload-item" id="upload-left">
                     <label>左侧 (Left)</label>
                     <div class="upload-box" data-view="left" data-type="rgb" onclick="triggerUpload('left')" title="点击或拖拽图片到此处">
+                        <button type="button" class="upload-delete" data-view="left" data-type="rgb" onclick="clearUpload('left','rgb'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-upload-left" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-left">点击或拖拽上传</span>
                     </div>
@@ -135,7 +137,25 @@
                 <p>欢迎使用 MH3D 人体三维重建系统</p>
                 <p class="small">生成完成后，3D 模型将在此展示</p>
             </div>
-            <canvas id="modelCanvas" style="display:none; width:100%; height:100%;"></canvas>
+            <model-viewer
+                id="modelViewer"
+                style="display:none; width:100%; height:100%;"
+                rotation-per-second="10deg"
+                environment-image="/static/env_gradient.jpg"
+                exposure="4"
+                shadow-intensity="1"
+                shadow-softness="0.8"
+                camera-target="0m 0m 0m"
+                camera-orbit="0deg 90deg 8m"
+                orientation="0deg 0deg 0deg"
+                auto-rotate
+                camera-controls
+                disable-tap
+                ar>
+                <div class="model-viewer-loading" slot="poster">
+                    <span>加载模型中...</span>
+                </div>
+            </model-viewer>
         </div>
 
         <!-- 进度条 -->
@@ -146,10 +166,16 @@
             <span class="progress-text" id="progressText">准备中...</span>
         </div>
 
-        <!-- 下载区 -->
+        <!-- 下载区：可选格式 glb / obj / ply -->
         <div class="download-section" id="downloadSection" style="display:none">
+            <label for="downloadFormat" class="download-format-label">保存格式：</label>
+            <select id="downloadFormat" class="download-format-select" onchange="updateDownloadLink()" title="选择导出格式">
+                <option value="glb">GLB</option>
+                <option value="obj">OBJ</option>
+                <option value="ply">PLY</option>
+            </select>
             <a class="btn btn-primary btn-download" id="btnDownload" href="#" download>
-                下载 OBJ 模型
+                下载模型
             </a>
         </div>
 
@@ -160,6 +186,7 @@
                 <div class="upload-item">
                     <label>正面</label>
                     <div class="upload-box upload-box-small" data-view="front" data-type="normal" onclick="triggerUploadExtra('front','normal')" title="点击或拖拽法线图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="front" data-type="normal" onclick="clearUpload('front','normal'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-normal-front" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-normal-front">可选</span>
                         <input type="file" id="file-normal-front" accept="image/*" style="display:none"
@@ -169,6 +196,7 @@
                 <div class="upload-item">
                     <label>右侧</label>
                     <div class="upload-box upload-box-small" data-view="right" data-type="normal" onclick="triggerUploadExtra('right','normal')" title="点击或拖拽法线图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="right" data-type="normal" onclick="clearUpload('right','normal'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-normal-right" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-normal-right">可选</span>
                         <input type="file" id="file-normal-right" accept="image/*" style="display:none"
@@ -178,6 +206,7 @@
                 <div class="upload-item">
                     <label>背面</label>
                     <div class="upload-box upload-box-small" data-view="back" data-type="normal" onclick="triggerUploadExtra('back','normal')" title="点击或拖拽法线图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="back" data-type="normal" onclick="clearUpload('back','normal'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-normal-back" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-normal-back">可选</span>
                         <input type="file" id="file-normal-back" accept="image/*" style="display:none"
@@ -187,6 +216,7 @@
                 <div class="upload-item">
                     <label>左侧</label>
                     <div class="upload-box upload-box-small" data-view="left" data-type="normal" onclick="triggerUploadExtra('left','normal')" title="点击或拖拽法线图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="left" data-type="normal" onclick="clearUpload('left','normal'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-normal-left" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-normal-left">可选</span>
                         <input type="file" id="file-normal-left" accept="image/*" style="display:none"
@@ -200,6 +230,7 @@
                 <div class="upload-item">
                     <label>正面</label>
                     <div class="upload-box upload-box-small" data-view="front" data-type="depth" onclick="triggerUploadExtra('front','depth')" title="点击或拖拽深度图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="front" data-type="depth" onclick="clearUpload('front','depth'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-depth-front" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-depth-front">可选</span>
                         <input type="file" id="file-depth-front" accept=".png,.tiff,.tif" style="display:none"
@@ -209,6 +240,7 @@
                 <div class="upload-item">
                     <label>右侧</label>
                     <div class="upload-box upload-box-small" data-view="right" data-type="depth" onclick="triggerUploadExtra('right','depth')" title="点击或拖拽深度图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="right" data-type="depth" onclick="clearUpload('right','depth'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-depth-right" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-depth-right">可选</span>
                         <input type="file" id="file-depth-right" accept=".png,.tiff,.tif" style="display:none"
@@ -218,6 +250,7 @@
                 <div class="upload-item">
                     <label>背面</label>
                     <div class="upload-box upload-box-small" data-view="back" data-type="depth" onclick="triggerUploadExtra('back','depth')" title="点击或拖拽深度图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="back" data-type="depth" onclick="clearUpload('back','depth'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-depth-back" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-depth-back">可选</span>
                         <input type="file" id="file-depth-back" accept=".png,.tiff,.tif" style="display:none"
@@ -227,6 +260,7 @@
                 <div class="upload-item">
                     <label>左侧</label>
                     <div class="upload-box upload-box-small" data-view="left" data-type="depth" onclick="triggerUploadExtra('left','depth')" title="点击或拖拽深度图">
+                        <button type="button" class="upload-delete upload-delete-small" data-view="left" data-type="depth" onclick="clearUpload('left','depth'); event.stopPropagation();" title="删除">×</button>
                         <img id="preview-depth-left" src="" alt="" style="display:none">
                         <span class="upload-placeholder" id="ph-depth-left">可选</span>
                         <input type="file" id="file-depth-left" accept=".png,.tiff,.tif" style="display:none"
@@ -244,7 +278,7 @@
                     </div>
                     <div class="param-item">
                         <label for="paramSteps">步数</label>
-                        <input type="number" id="paramSteps" value="50" min="1" max="100">
+                        <input type="number" id="paramSteps" value="30" min="1" max="100">
                     </div>
                     <div class="param-item">
                         <label for="paramResolution">Octree</label>
@@ -256,7 +290,7 @@
                     </div>
                     <div class="param-item">
                         <label for="paramChunks">Chunks</label>
-                        <input type="number" id="paramChunks" value="200000" min="1000" max="500000" step="1000">
+                        <input type="number" id="paramChunks" value="8000" min="1000" max="500000" step="1000">
                     </div>
                 </div>
                 <div class="param-item" style="margin-top:6px">

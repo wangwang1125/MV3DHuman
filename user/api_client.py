@@ -11,7 +11,7 @@ import httpx
 
 DEFAULT_API_BASE = "http://region-42.seetacloud.com:33246"
 REQUEST_TIMEOUT = 600.0
-POLL_INTERVAL = 5.0
+POLL_INTERVAL = 0.5
 
 
 class MH3DApiClient:
@@ -47,9 +47,9 @@ class MH3DApiClient:
         remove_background: bool = True,
         seed: int = 1234,
         octree_resolution: int = 256,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 30,
         guidance_scale: float = 5.0,
-        num_chunks: int = 200000,
+        num_chunks: int = 8000,
     ) -> str:
         """
         提交生成任务。至少一张 RGB 图即可，法线/深度可选。
@@ -113,16 +113,21 @@ class MH3DApiClient:
     ) -> dict:
         """
         轮询等待任务完成。
-
-        Args:
-            on_status: 可选回调 async def(status_dict)，每次轮询时调用
-        Returns:
-            最终的状态 dict（含 model_base64 或 error message）
+        对连接断开、超时等临时网络错误自动重试，避免误报“生成失败”。
         """
         import time
         start = time.time()
         while time.time() - start < max_wait:
-            data = await self.poll_status(uid)
+            try:
+                data = await self.poll_status(uid)
+            except httpx.HTTPStatusError:
+                raise  # 4xx/5xx 不重试
+            except httpx.RequestError as e:
+                # 连接断开/超时等：任务可能仍在云端执行，继续轮询
+                if time.time() - start >= max_wait:
+                    return {"status": "error", "message": f"网络异常且已超时: {e!s}"}
+                await asyncio.sleep(min(5.0, poll_interval))
+                continue
             status = data.get("status", "unknown")
             if on_status:
                 await on_status(data)
@@ -148,9 +153,9 @@ class MH3DApiClient:
             "remove_background": kwargs.get("remove_background", True),
             "seed": kwargs.get("seed", 1234),
             "octree_resolution": kwargs.get("octree_resolution", 256),
-            "num_inference_steps": kwargs.get("num_inference_steps", 50),
+            "num_inference_steps": kwargs.get("num_inference_steps", 30),
             "guidance_scale": kwargs.get("guidance_scale", 5.0),
-            "num_chunks": kwargs.get("num_chunks", 200000),
+            "num_chunks": kwargs.get("num_chunks", 8000),
         }
         for v in ("front", "right", "back", "left"):
             if v in images and images[v]:

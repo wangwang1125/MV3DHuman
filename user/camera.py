@@ -27,31 +27,51 @@ VIEW_LABELS_EN = {
     "back": "Back", "left": "Left", "unknown": "?",
 }
 
+
+def _voice_turn_hint(required_view: str) -> str:
+    """需要某视图时，播报用户应转向的方向（需右视图=用户向左转）。"""
+    if required_view == "right":
+        return "请向左转身，让摄像头拍到您的右侧"
+    if required_view == "left":
+        return "请再向左转身，让摄像头拍到您的左侧"
+    if required_view == "front":
+        return "请面向摄像头"
+    if required_view == "back":
+        return "请背对摄像头"
+    return f"请转向{VIEW_LABELS.get(required_view, required_view)}"
+
+
 SIDE_THRESHOLD = 0.04
 FRONT_BACK_THRESHOLD = 0.03
 STABLE_FRAMES_REQUIRED = 20
+STABLE_HOLD_SECONDS = 2.0
 FOOT_REGION_TOP = 0.75
 
 
 class ViewClassifier:
-    """根据 MediaPipe Pose 关键点判断用户面朝方向。"""
+    """根据 MediaPipe Pose 关键点判断用户面朝方向。阈值随身体在画面中的尺度自适应，避免远距离时误判为正面。"""
 
     def classify(self, landmarks) -> str:
         left_eye, right_eye = landmarks[2], landmarks[5]
         left_ear, right_ear = landmarks[7], landmarks[8]
         left_shoulder, right_shoulder = landmarks[11], landmarks[12]
 
+        shoulder_span = abs(right_shoulder.x - left_shoulder.x)
+        scale = max(shoulder_span, 0.08)
+        side_thresh = max(0.012, min(0.055, SIDE_THRESHOLD * (scale / 0.25)))
+        fb_thresh = max(0.01, min(0.04, FRONT_BACK_THRESHOLD * (scale / 0.25)))
+
         eye_center_x = (left_eye.x + right_eye.x) / 2
         ear_center_x = (left_ear.x + right_ear.x) / 2
         eye_ear_diff = eye_center_x - ear_center_x
 
-        if abs(eye_ear_diff) > SIDE_THRESHOLD:
+        if abs(eye_ear_diff) > side_thresh:
             return "right" if eye_ear_diff < 0 else "left"
 
         shoulder_diff = right_shoulder.x - left_shoulder.x
-        if shoulder_diff > FRONT_BACK_THRESHOLD:
+        if shoulder_diff > fb_thresh:
             return "back"
-        elif shoulder_diff < -FRONT_BACK_THRESHOLD:
+        elif shoulder_diff < -fb_thresh:
             return "front"
 
         return "unknown"
@@ -100,6 +120,7 @@ class CameraManager:
         self._capture_order_idx = 0
         self._last_voice_time: dict[str, float] = {}
         self._pending_voice: Optional[str] = None
+        self._capture_ready_at: Optional[float] = None
 
     @property
     def is_running(self) -> bool:
@@ -132,6 +153,7 @@ class CameraManager:
         self._capture_order_idx = 0
         self.captured_views = {v: None for v in VIEW_ORDER}
         self._stable_history.clear()
+        self._capture_ready_at = None
 
     def stop(self):
         self._running = False
@@ -146,6 +168,7 @@ class CameraManager:
         self._capture_order_idx = 0
         self.captured_views = {v: None for v in VIEW_ORDER}
         self._stable_history.clear()
+        self._capture_ready_at = None
 
     def _throttled_voice(self, key: str, text: str, interval: float = 4.0) -> Optional[str]:
         now = time.time()
@@ -198,12 +221,18 @@ class CameraManager:
                 self._stable_history.append(self.current_view)
                 stable_count = sum(1 for v in self._stable_history if v == required)
 
+                if self.current_view != required or not self.standing_ok:
+                    self._capture_ready_at = None
                 if stable_count >= STABLE_FRAMES_REQUIRED and self.standing_ok:
-                    self._do_auto_capture(required)
+                    now = time.time()
+                    if self._capture_ready_at is None:
+                        self._capture_ready_at = now
+                    elif now - self._capture_ready_at >= STABLE_HOLD_SECONDS:
+                        self._do_auto_capture(required)
+                        self._capture_ready_at = None
                 elif self.current_view != required:
-                    label = VIEW_LABELS.get(required, required)
                     self._pending_voice = self._throttled_voice(
-                        f"guide_{required}", f"请转向{label}面对摄像头"
+                        f"guide_{required}", _voice_turn_hint(required)
                     )
                 elif not self.standing_ok:
                     self._pending_voice = self._throttled_voice(
@@ -231,8 +260,7 @@ class CameraManager:
 
             next_view = self.next_required_view
             if next_view:
-                label = VIEW_LABELS.get(next_view, next_view)
-                self._pending_voice = f"{VIEW_LABELS[view]}已拍摄，请转向{label}"
+                self._pending_voice = f"{VIEW_LABELS[view]}已拍摄，{_voice_turn_hint(next_view)}"
             else:
                 self._pending_voice = "四个视图全部拍摄完成"
 
