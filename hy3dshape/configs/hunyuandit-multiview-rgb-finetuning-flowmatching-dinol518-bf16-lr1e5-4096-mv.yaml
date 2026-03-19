@@ -6,10 +6,10 @@ name: "HunyuanDiT Multi-View RGB Full Fine-tuning (from Hunyuan3D-2mv); VAE: 307
 # Supports loading from pretrained weights and resuming from checkpoints
 
 training:
-  steps: 10_0000
+  steps: 1000_0000
   use_amp: true
   amp_type: "bf16"
-  base_lr: 1e-5
+  base_lr: 1e-6
   gradient_clip_val: 1.0
   gradient_clip_algorithm: "norm"
   every_n_train_steps: 5000
@@ -37,6 +37,13 @@ dataset:
     # 设为 null 或 4 则固定使用全部 4 视图；"random" 或 [1,2,3,4] 为随机单/双/三/四视图
     sample_num_views: "random"
     # normal_fusion_strategy not needed for RGB-only training
+
+    # Filter training samples by human height from `render_cond/transforms.json`.
+    # If `human_height_m` < 1.4, drop with probability 0.5.
+    height_filter_min_human_height_m: 1.4
+    height_filter_drop_prob_below_min: 0.5
+    transforms_json_relpath: "render_cond/transforms.json"
+    height_filter_rng_seed: 0
 
     #! Image loading
     cond_stage_key: "image"

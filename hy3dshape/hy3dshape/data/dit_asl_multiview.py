@@ -107,6 +107,41 @@ def multiview_collate_fn(batch):
     return collated
 
 
+def _extract_human_height_m_from_transforms(transforms_json: dict) -> Optional[float]:
+    """
+    Robustly extract `real_world_params.human_height_m` from different transforms.json layouts.
+    Expected (based on your snippet): transforms_json["real_world_params"]["human_height_m"].
+    """
+    if not isinstance(transforms_json, dict):
+        return None
+
+    # Case 1: directly under root
+    if "real_world_params" in transforms_json and isinstance(transforms_json["real_world_params"], dict):
+        v = transforms_json["real_world_params"].get("human_height_m")
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+    # Case 2: list of frames
+    frames = transforms_json.get("frames")
+    if isinstance(frames, list):
+        for fr in frames:
+            if not isinstance(fr, dict):
+                continue
+            rp = fr.get("real_world_params")
+            if isinstance(rp, dict) and "human_height_m" in rp:
+                v = rp.get("human_height_m")
+                if v is not None:
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        continue
+
+    return None
+
+
 class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDataset):
     def __init__(
         self,
@@ -127,6 +162,11 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         depth_fusion_strategy: str = "multiview",  # "multiview" (keep all views), "average", "max", "weighted"
         normal_fusion_strategy: str = "multiview",  # For normal maps, keep all views for DinoImageEncoderMV
         sample_num_views: Optional[Union[str, List[int]]] = None,  # None/4: 固定4视图; "random" 或 [1,2,3,4]: 每样本随机1~4视图
+        # Height-based probabilistic filtering (applied to `self.data_list`)
+        height_filter_min_human_height_m: Optional[float] = None,
+        height_filter_drop_prob_below_min: float = 0.5,
+        transforms_json_relpath: str = "render_cond/transforms.json",
+        height_filter_rng_seed: int = 0,
     ):
         """
         Multi-view dataset for loading front/back/left/right views with depth maps and normal maps
@@ -164,6 +204,14 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         self.depth_fusion_strategy = depth_fusion_strategy
         self.normal_fusion_strategy = normal_fusion_strategy
         self.sample_num_views = sample_num_views  # None/4: 全4视图; "random" 或 [1,2,3,4]: 随机1~4视图
+
+        self.height_filter_min_human_height_m = height_filter_min_human_height_m
+        self.height_filter_drop_prob_below_min = height_filter_drop_prob_below_min
+        self.transforms_json_relpath = transforms_json_relpath
+        self.height_filter_rng_seed = height_filter_rng_seed
+
+        if self.height_filter_min_human_height_m is not None:
+            assert 0.0 <= self.height_filter_drop_prob_below_min <= 1.0, "drop prob must be in [0, 1]"
         
         # 映射视图索引到视图名称（与 MVImageProcessorV2 的 view2idx 一致）
         # 假设 multiview_indices 的顺序是 [front_idx, left_idx, back_idx, right_idx]
@@ -188,6 +236,54 @@ class AlignedShapeLatentMultiViewDataset(torch.utils.data.dataset.IterableDatase
         rank_zero_info(f'Load normal maps: {self.load_normal}')
         rank_zero_info(f'Multi-view indices: {self.multiview_indices} (total {len(self.multiview_indices)} views)')
         rank_zero_info(f'Sample num_views: {self.sample_num_views} (random 1~4 views when "random" or [1,2,3,4])')
+
+        # Apply height filter by probabilistically dropping samples with small human height.
+        if self.height_filter_min_human_height_m is not None:
+            before = len(self.data_list)
+            rng = random.Random(self.height_filter_rng_seed)
+            kept = []
+            dropped = 0
+            missing = 0
+            bad = 0
+            for item in self.data_list:
+                transforms_json_path = os.path.join(item, self.transforms_json_relpath)
+                if not os.path.exists(transforms_json_path):
+                    missing += 1
+                    kept.append(item)
+                    continue
+                try:
+                    tj = read_json(transforms_json_path)
+                    h = _extract_human_height_m_from_transforms(tj)
+                    if h is None:
+                        bad += 1
+                        kept.append(item)
+                        continue
+                    if h < self.height_filter_min_human_height_m:
+                        # Drop with probability p
+                        if rng.random() < self.height_filter_drop_prob_below_min:
+                            dropped += 1
+                            continue
+                    kept.append(item)
+                except Exception:
+                    # Be conservative: keep sample to avoid crashing training
+                    bad += 1
+                    kept.append(item)
+
+            self.data_list = kept
+            after = len(self.data_list)
+            rank_zero_info(
+                "Height filtering enabled: human_height_m < %.3f dropped with prob %.3f. "
+                "Before=%d After=%d Dropped=%d Missing=%d ParseFail=%d"
+                % (
+                    self.height_filter_min_human_height_m,
+                    self.height_filter_drop_prob_below_min,
+                    before,
+                    after,
+                    dropped,
+                    missing,
+                    bad,
+                )
+            )
         rank_zero_info(f'*' * 50)
 
     def _sample_view_subset(self) -> List[str]:
@@ -581,6 +677,12 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         depth_fusion_strategy: str = "multiview",  # 深度融合策略
         normal_fusion_strategy: str = "multiview",  # 法线图融合策略
         sample_num_views: Optional[Union[str, List[int]]] = None,  # None/4: 固定4视图; "random" 或 [1,2,3,4]: 每样本随机1~4视图
+        # Height-based probabilistic filtering (train-time only is typical; can also be applied to val if desired)
+        height_filter_min_human_height_m: Optional[float] = None,
+        height_filter_drop_prob_below_min: float = 0.5,
+        transforms_json_relpath: str = "render_cond/transforms.json",
+        height_filter_rng_seed: int = 0,
+        apply_height_filter_to_val: bool = False,
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -616,6 +718,12 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
         self.depth_fusion_strategy = depth_fusion_strategy
         self.normal_fusion_strategy = normal_fusion_strategy
         self.sample_num_views = sample_num_views
+
+        self.height_filter_min_human_height_m = height_filter_min_human_height_m
+        self.height_filter_drop_prob_below_min = height_filter_drop_prob_below_min
+        self.transforms_json_relpath = transforms_json_relpath
+        self.height_filter_rng_seed = height_filter_rng_seed
+        self.apply_height_filter_to_val = apply_height_filter_to_val
         
     def train_dataloader(self):
         asl_params = {
@@ -634,6 +742,10 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "depth_fusion_strategy": self.depth_fusion_strategy,
             "normal_fusion_strategy": self.normal_fusion_strategy,
             "sample_num_views": self.sample_num_views,
+            "height_filter_min_human_height_m": self.height_filter_min_human_height_m,
+            "height_filter_drop_prob_below_min": self.height_filter_drop_prob_below_min,
+            "transforms_json_relpath": self.transforms_json_relpath,
+            "height_filter_rng_seed": self.height_filter_rng_seed,
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
@@ -663,6 +775,11 @@ class AlignedShapeLatentMultiViewModule(LightningDataModule):
             "depth_fusion_strategy": self.depth_fusion_strategy,
             "normal_fusion_strategy": self.normal_fusion_strategy,
             "sample_num_views": self.sample_num_views,
+            # Default: keep full val set for evaluation fairness
+            "height_filter_min_human_height_m": self.height_filter_min_human_height_m if self.apply_height_filter_to_val else None,
+            "height_filter_drop_prob_below_min": self.height_filter_drop_prob_below_min,
+            "transforms_json_relpath": self.transforms_json_relpath,
+            "height_filter_rng_seed": self.height_filter_rng_seed,
         }
         dataset = AlignedShapeLatentMultiViewDataset(**asl_params)
         return torch.utils.data.DataLoader(
