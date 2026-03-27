@@ -55,6 +55,25 @@ def multiview_collate_fn(batch):
     """
     if len(batch) == 0:
         return {}
+
+    collated = {}
+    for key in batch[0].keys():
+        values = [sample.get(key) for sample in batch]
+        values = [v for v in values if v is not None]
+        if len(values) == 0:
+            continue
+
+        if key in ['image', 'normal'] and isinstance(values[0], dict):
+            collated[key] = values
+        elif isinstance(values[0], torch.Tensor):
+            if values[0].dim() == 0:
+                collated[key] = torch.stack(values, dim=0)
+            else:
+                collated[key] = torch.stack(values, dim=0) if values[0].dim() > 1 else torch.cat(values, dim=0)
+        else:
+            collated[key] = values
+
+    return collated
     
     # 先为本 batch 确定目标视图数 k（1～4 随机），再与 batch 内最小视图数取 min，保证不需填充
     num_views_per_sample = [len(s.get('image') or {}) for s in batch]
