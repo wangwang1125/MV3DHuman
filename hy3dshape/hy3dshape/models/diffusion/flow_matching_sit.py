@@ -10,7 +10,7 @@ from pytorch_lightning.utilities import rank_zero_info
 from pytorch_lightning.utilities import rank_zero_only
 
 from ...utils.ema import LitEma
-from ...utils.misc import instantiate_from_config, instantiate_non_trainable_model
+from ...utils.misc import instantiate_from_config, instantiate_non_trainable_model, freeze_eval_module
 from ...utils import smart_load_model
 
 
@@ -57,6 +57,9 @@ class Diffuser(pl.LightningModule):
         self.denoiser_cfg = denoiser_cfg
         self.model = instantiate_from_config(denoiser_cfg, device=None, dtype=None)
         self.cond_stage_model = instantiate_from_config(cond_stage_config)
+        if not self.optimizer_cfg.get('train_image_encoder', False):
+            self.cond_stage_model = freeze_eval_module(self.cond_stage_model)
+            rank_zero_info("Frozen cond_stage_model in eval mode")
         
         # Log conditioner info
         rank_zero_info(f"Initialized cond_stage_model: {type(self.cond_stage_model).__name__}")

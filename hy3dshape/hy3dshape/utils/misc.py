@@ -98,6 +98,15 @@ def instantiate_non_trainable_model(config):
     return model
 
 
+def freeze_eval_module(model):
+    """Freeze a module and keep it in eval mode across Lightning train()/eval() toggles."""
+    model = model.eval()
+    model.train = disabled_train
+    for param in model.parameters():
+        param.requires_grad = False
+    return model
+
+
 def is_dist_avail_and_initialized():
     if not dist.is_available():
         return False
