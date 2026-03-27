@@ -32,6 +32,7 @@ class Diffuser(pl.LightningModule):
         control_in_channels: int = None,
         first_stage_key: str = "surface",
         cond_stage_key: str = "image",
+        sample_posterior: bool = True,
         scale_by_std: bool = False,
         z_scale_factor: float = 1.0,
         ckpt_path: Optional[str] = None,
@@ -41,6 +42,7 @@ class Diffuser(pl.LightningModule):
         super().__init__()
         self.first_stage_key = first_stage_key
         self.cond_stage_key = cond_stage_key
+        self.sample_posterior = sample_posterior
 
         # ========= init optimizer config ========= #
         self.optimizer_cfg = optimizer_cfg
@@ -622,7 +624,10 @@ class Diffuser(pl.LightningModule):
 
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             with torch.no_grad():
-                latents = self.first_stage_model.encode(batch[self.first_stage_key], sample_posterior=True)
+                latents = self.first_stage_model.encode(
+                    batch[self.first_stage_key],
+                    sample_posterior=self.sample_posterior,
+                )
                 latents = self.z_scale_factor * latents
                 # print(latents.shape)
 

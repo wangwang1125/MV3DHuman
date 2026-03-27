@@ -48,6 +48,7 @@ model:
   params:
     first_stage_key: "surface"
     cond_stage_key: "image"
+    sample_posterior: false
     scale_by_std: false
     z_scale_factor: &z_scale_factor 0.9990943042622529
     torch_compile: false
