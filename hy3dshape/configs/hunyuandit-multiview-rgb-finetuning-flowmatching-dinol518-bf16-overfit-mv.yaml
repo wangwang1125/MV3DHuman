@@ -1,0 +1,143 @@
+name: "HunyuanDiT Multi-View RGB Full Fine-tuning Overfit (from Hunyuan3D-2mv); VAE: 3072 tokens (v2-0); ImageEncoder: DINO-v2 Giant; ImageSize: 512; Views: 4"
+# Small-set overfit config for debugging convergence on the multiview RGB pipeline.
+# Keep the model/pipeline close to the main MV config while reducing data randomness.
+
+training:
+  steps: 2000
+  use_amp: true
+  amp_type: "bf16"
+  base_lr: 1e-5
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
+  every_n_train_steps: 200
+  val_check_interval: 100
+  limit_val_batches: 8
+  monitor: "val/total_loss"
+  output_dir: "output_folder/dit/multiview_rgb_finetuning_mv_overfit"
+  ckpt_path: ""
+
+dataset:
+  target: hy3dshape.data.dit_asl_multiview.AlignedShapeLatentMultiViewModule
+  params:
+    batch_size: 1
+    num_workers: 4
+    val_num_workers: 2
+
+    train_data_list: tools/mini_mv_trainset/preprocessed
+    val_data_list: tools/mini_mv_trainset/preprocessed
+
+    multiview_indices: [0, 1, 2, 3]
+    sample_num_views: 4
+
+    cond_stage_key: "image"
+    image_size: 512
+    mean: &mean [0.5, 0.5, 0.5]
+    std: &std [0.5, 0.5, 0.5]
+
+    load_normal: false
+
+    pc_size: &pc_size 81920
+    pc_sharpedge_size: &pc_sharpedge_size 0
+    sharpedge_label: &sharpedge_label true
+    return_normal: true
+
+    padding: true
+
+model:
+  target: hy3dshape.models.diffusion.flow_matching_sit.Diffuser
+  params:
+    first_stage_key: "surface"
+    cond_stage_key: "image"
+    scale_by_std: false
+    z_scale_factor: &z_scale_factor 0.9990943042622529
+    torch_compile: false
+
+    first_stage_config:
+      target: hy3dshape.models.autoencoders.ShapeVAE
+      from_pretrained: tencent/Hunyuan3D-2
+      subfolder: hunyuan3d-vae-v2-0-withencoder
+      use_safetensors: false
+      params:
+        pc_size: *pc_size
+        pc_sharpedge_size: *pc_sharpedge_size
+
+    cond_stage_config:
+      target: hy3dshape.models.conditioner.SingleImageEncoder
+      params:
+        drop_ratio: 0.1
+        main_image_encoder:
+          type: DinoImageEncoderMV
+          kwargs:
+            version: "facebook/dinov2-giant"
+            image_size: 512
+            use_cls_token: true
+            view_num: 4
+
+    denoiser_cfg:
+      target: hy3dshape.models.denoisers.hunyuan3ddit.Hunyuan3DDiT
+      from_pretrained: tencent/Hunyuan3D-2mv
+      subfolder: hunyuan3d-dit-v2-mv
+      use_safetensors: true
+      params:
+        input_size: 3072
+        with_decoupled_ca: false
+        num_views: 4
+        text_len: 5480
+
+    scheduler_cfg:
+      transport:
+        target: hy3dshape.models.diffusion.transport.create_transport
+        params:
+          path_type: Linear
+          prediction: velocity
+      sampler:
+        target: hy3dshape.models.diffusion.transport.Sampler
+        params: {}
+        ode_params:
+          sampling_method: euler
+          num_steps: &num_steps 50
+
+    optimizer_cfg:
+      optimizer:
+        target: torch.optim.AdamW
+        params:
+          betas: [0.9, 0.99]
+          eps: 1.e-6
+          weight_decay: 1.e-2
+
+      scheduler:
+        target: hy3dshape.utils.trainings.lr_scheduler.LambdaWarmUpCosineFactorScheduler
+        params:
+          warm_up_steps: 50
+          f_start: 1.e-6
+          f_min: 1.e-3
+          f_max: 1.0
+
+    pipeline_cfg:
+      target: hy3dshape.pipelines.Hunyuan3DDiTFlowMatchingPipeline
+
+    image_processor_cfg:
+      target: hy3dshape.preprocessors.MVImageProcessorV2
+      params:
+        size: 512
+        border_ratio: 0
+
+callbacks:
+  logger:
+    target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalASLDiffuserLogger
+    params:
+      step_frequency: 200
+      num_samples: 1
+      sample_times: 1
+      mean: *mean
+      std: *std
+      bounds: [-1.01, -1.01, -1.01, 1.01, 1.01, 1.01]
+      octree_depth: 8
+      num_chunks: 50000
+      mc_level: 0.0
+
+  file_loggers:
+    target: hy3dshape.utils.trainings.mesh_log_callback.ImageConditionalFixASLDiffuserLogger
+    params:
+      step_frequency: 200
+      test_data_path: "tools/mini_testset/images.json"
